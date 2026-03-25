@@ -6,6 +6,9 @@ import { Terminal, LogEntry } from "@/components/ide/Terminal";
 import { Toolbar } from "@/components/ide/Toolbar";
 import { ContractPanel } from "@/components/ide/ContractPanel";
 import { StatusBar } from "@/components/ide/StatusBar";
+import { FileNode } from "@/lib/sample-contracts";
+import { useFileStore } from "@/store/useFileStore";
+import { useIdentityStore } from "@/store/useIdentityStore";
 import { sampleContracts, FileNode } from "@/lib/sample-contracts";
 import { DROP_LIMIT_BYTES, mapDroppedEntriesToTree, mergeFileNodes, readDropPayload } from "@/lib/file-drop";
 import {
@@ -32,6 +35,12 @@ const findParent = (nodes: FileNode[], pathParts: string[]): FileNode[] | null =
   const parent = findNode(nodes, pathParts.slice(0, -1));
   return parent?.children ?? null;
 };
+
+  const { loadIdentities } = useIdentityStore();
+
+  useEffect(() => {
+    loadIdentities();
+  }, [loadIdentities]);
 
 const Index = () => {
   const [files, setFiles] = useState<FileNode[]>(() => cloneFiles(sampleContracts));
@@ -308,11 +317,17 @@ const Index = () => {
     }, 1200);
   }, [addLog]);
 
-  const handleInvoke = useCallback((fn: string, args: string) => {
-    setTerminalExpanded(true);
-    addLog("info", `Invoking ${fn}(${args})...`);
-    setTimeout(() => addLog("success", `✓ Result: ["Hello", "Dev"]`), 800);
-  }, [addLog]);
+  const { activeIdentity } = useIdentityStore();
+
+  const handleInvoke = useCallback(
+    (fn: string, args: string) => {
+      setTerminalExpanded(true);
+      const signer = activeIdentity ? activeIdentity.nickname : "anonymous";
+      addLog("info", `Invoking ${fn}(${args}) as ${signer}...`);
+      setTimeout(() => addLog("success", `✓ Result: ["Hello", "Dev"]`), 800);
+    },
+    [addLog, activeIdentity]
+  );
 
   const handleExplorerDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -363,6 +378,7 @@ const Index = () => {
     }
   }, [addLog]);
   const { content, language } = getActiveContent();
+
 
   // Tabs with unsaved markers
   const tabsWithStatus = openTabs.map((t) => ({
@@ -559,45 +575,48 @@ const Index = () => {
         {/* Tab buttons */}
         <div className="flex items-stretch">
           <button
-            onClick={() => setMobilePanel(mobilePanel === "explorer" ? "none" : "explorer")}
-            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors border-t-2 ${
-              mobilePanel === "explorer"
-                ? "border-primary text-primary bg-primary/5"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
+            onClick={() =>
+              setMobilePanel(mobilePanel === "explorer" ? "none" : "explorer")
+            }
+            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors border-t-2 ${mobilePanel === "explorer"
+              ? "border-primary text-primary bg-primary/5"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
           >
             <FolderTree className="h-4 w-4" />
             Explorer
           </button>
           <button
             onClick={() => setMobilePanel("none")}
-            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors border-t-2 ${
-              mobilePanel === "none"
-                ? "border-primary text-primary bg-primary/5"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
+            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors border-t-2 ${mobilePanel === "none"
+              ? "border-primary text-primary bg-primary/5"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
           >
             <FileText className="h-4 w-4" />
             Editor
           </button>
           <button
-            onClick={() => setMobilePanel(mobilePanel === "interact" ? "none" : "interact")}
-            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors border-t-2 ${
-              mobilePanel === "interact"
-                ? "border-primary text-primary bg-primary/5"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
+            onClick={() =>
+              setMobilePanel(mobilePanel === "interact" ? "none" : "interact")
+            }
+            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors border-t-2 ${mobilePanel === "interact"
+              ? "border-primary text-primary bg-primary/5"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
           >
             <Rocket className="h-4 w-4" />
             Interact
           </button>
           <button
-            onClick={() => { setTerminalExpanded(!terminalExpanded); setMobilePanel("none"); }}
-            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors border-t-2 ${
-              terminalExpanded
-                ? "border-primary text-primary bg-primary/5"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
+            onClick={() => {
+              setTerminalExpanded(!terminalExpanded);
+              setMobilePanel("none");
+            }}
+            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors border-t-2 ${terminalExpanded
+              ? "border-primary text-primary bg-primary/5"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
           >
             <TerminalIcon className="h-4 w-4" />
             Console
