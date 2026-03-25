@@ -1,4 +1,4 @@
-import React, { Suspense, useCallback } from 'react';
+import React, { Suspense, useRef } from 'react';
 import Editor, { OnMount, OnChange } from '@monaco-editor/react';
 import { useFileStore } from '@/store/useFileStore';
 
@@ -9,6 +9,7 @@ interface CodeEditorProps {
 
 const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
   const { activeTabPath, files, updateFileContent } = useFileStore();
+  const rustProviderRegistered = useRef(false);
 
   const activeFile = React.useMemo(() => {
     const findNode = (nodes: any[], pathParts: string[]): any | null => {
@@ -30,17 +31,14 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
   };
 
   const handleEditorDidMount: OnMount = (editor, monaco) => {
-    // Add custom keyboard shortcuts
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       onSave?.();
     });
 
-    // Handle cursor change
     editor.onDidChangeCursorPosition((e) => {
       onCursorChange?.(e.position.lineNumber, e.position.column);
     });
 
-    // Set theme
     monaco.editor.defineTheme('stellar-dark', {
       base: 'vs-dark',
       inherit: true,
@@ -57,6 +55,70 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
       },
     });
     monaco.editor.setTheme('stellar-dark');
+
+    if (!rustProviderRegistered.current) {
+      rustProviderRegistered.current = true;
+
+monaco.languages.registerCompletionItemProvider('rust', {
+  triggerCharacters: ['.', ':', ' '], // 👈 IMPORTANT
+
+  provideCompletionItems: () => {
+    const suggestions = [
+      {
+        label: 'contractimpl',
+        kind: monaco.languages.CompletionItemKind.Snippet,
+        documentation: 'Soroban contract implementation snippet',
+        insertText: [
+          '#[contractimpl]',
+          'impl Contract {',
+          '\tpub fn init(env: Env) {',
+          '\t\t$0',
+          '\t}',
+          '}',
+        ].join('\n'),
+        insertTextRules:
+          monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      },
+      {
+        label: 'contracttype',
+        kind: monaco.languages.CompletionItemKind.Snippet,
+        documentation: 'Soroban contract type snippet',
+        insertText: [
+          '#[contracttype]',
+          'pub enum ${1:DataKey} {',
+          '\t${2:Admin},',
+          '}',
+        ].join('\n'),
+        insertTextRules:
+          monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      },
+      {
+        label: 'envimports',
+        kind: monaco.languages.CompletionItemKind.Snippet,
+        documentation: 'Common Soroban SDK imports',
+        insertText:
+          'use soroban_sdk::{contract, contractimpl, contracttype, Env, Symbol, String};',
+        insertTextRules:
+          monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      },
+      {
+        label: 'init',
+        kind: monaco.languages.CompletionItemKind.Snippet,
+        documentation: 'Rust init function snippet',
+        insertText: [
+          'pub fn init(env: Env) {',
+          '\t$0',
+          '}',
+        ].join('\n'),
+        insertTextRules:
+          monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+      },
+    ];
+
+    return { suggestions };
+  },
+});
+    }
   };
 
   if (!activeFile) {
@@ -69,15 +131,23 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
 
   return (
     <div className="h-full w-full overflow-hidden relative border-t border-border">
-      <Suspense fallback={
-        <div className="h-full flex items-center justify-center bg-[#1e1e2e] text-muted-foreground font-mono text-xs">
-          Loading Editor...
-        </div>
-      }>
+      <Suspense
+        fallback={
+          <div className="h-full flex items-center justify-center bg-[#1e1e2e] text-muted-foreground font-mono text-xs">
+            Loading Editor...
+          </div>
+        }
+      >
         <Editor
           height="100%"
-          defaultLanguage={activeFile.language || "rust"}
-          language={activeFile.language || "rust"}
+          defaultLanguage={
+            activeFile.language ||
+            (activeFile.name?.endsWith('.toml') ? 'toml' : 'rust')
+          }
+          language={
+            activeFile.language ||
+            (activeFile.name?.endsWith('.toml') ? 'toml' : 'rust')
+          }
           value={activeFile.content}
           theme="stellar-dark"
           onChange={handleEditorChange}
@@ -88,7 +158,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
             scrollBeyondLastLine: false,
             automaticLayout: true,
             tabSize: 4,
-            lineNumbers: "on",
+            lineNumbers: 'on',
             glyphMargin: false,
             folding: true,
             lineDecorationsWidth: 10,
