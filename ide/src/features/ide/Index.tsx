@@ -5,6 +5,8 @@ import { FileExplorer } from "@/components/ide/FileExplorer";
 import { EditorTabs } from "@/components/ide/EditorTabs";
 import CodeEditor from "@/components/ide/CodeEditor";
 import { Terminal } from "@/components/ide/Terminal";
+import { Toolbar } from "@/components/ide/Toolbar";
+import { AssistantSidebar } from "@/components/ide/AssistantSidebar";
 import { ContractPanel } from "@/components/ide/ContractPanel";
 import { IdentitiesView } from "@/components/ide/IdentitiesView";
 import { ProductTour } from "@/components/ide/ProductTour";
@@ -24,6 +26,7 @@ import { RpcService } from "@/lib/rpcService";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { DeploymentsView } from "@/components/ide/DeploymentsView";
 import { useDeployedContractsStore } from "@/store/useDeployedContractsStore";
+import { createInvocationDebugData, type InvocationDebugData } from "@/lib/invokeResult";
 import {
   FileText,
   FolderTree,
@@ -78,6 +81,20 @@ const flattenProjectFiles = (nodes: FileNode[], parentPath: string[] = []) =>
   });
 
 const Index = () => {
+  const [terminalExpanded, setTerminalExpanded] = useState(true);
+  const [terminalOutput, setTerminalOutput] = useState("");
+  const [isCompiling, setIsCompiling] = useState(false);
+  const [contractId, setContractId] = useState<string | null>(null);
+  const [lastInvocation, setLastInvocation] = useState<InvocationDebugData | null>(null);
+  const [showExplorer, setShowExplorer] = useState(false);
+  const [showPanel, setShowPanel] = useState(false);
+  const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
+  const [saveStatus, setSaveStatus] = useState("");
+  const [mobilePanel, setMobilePanel] = useState<"none" | "explorer" | "interact" | "deployments" | "identities">("none");
+  const [isExplorerDragActive, setIsExplorerDragActive] = useState(false);
+  const [leftSidebarTab, setLeftSidebarTab] = useState<"explorer" | "deployments" | "identities" | "search">("explorer");
+  const dragDepthRef = useRef(0);
+
   const {
     // File System
     files,
@@ -272,6 +289,37 @@ const Index = () => {
         activeContext?.type === "web-wallet"
           ? "browser-wallet"
           : activeIdentity?.nickname ?? "anonymous";
+      appendTerminalOutput(`Invoking ${fn}(${args}) as ${signer}...\r\n`);
+      setTimeout(() => {
+        const result = '["Hello", "Dev"]';
+        appendTerminalOutput(`Result: ${result}\r\n`);
+        setLastInvocation(
+          createInvocationDebugData({
+            functionName: fn,
+            args,
+            signer,
+            network,
+            result,
+          })
+        );
+      }, 800);
+    },
+    [activeContext, activeIdentity, appendTerminalOutput, network]
+  );
+
+  const handleCreateFile = useCallback(
+    (parent: string[], name: string) => {
+      createFile(parent, name);
+    },
+    [createFile]
+  );
+
+  const handleCreateFolder = useCallback(
+    (parent: string[], name: string) => {
+      createFolder(parent, name);
+    },
+    [createFolder]
+  );
       appendTerminalOutput(`${isSimulation ? 'Simulating' : 'Invoking'} ${fn}(${args}) as ${signer}...\r\n`);
 
       try {
@@ -387,6 +435,13 @@ const Index = () => {
   }, [setLeftSidebarTab, setShowExplorer, setMobilePanel]);
 
   const { content, language, fileId } = getActiveContent();
+  const activeFileContext = activeTabPath.length
+    ? {
+        path: activeTabPath.join("/"),
+        language,
+        content,
+      }
+    : null;
 
   const tabsWithStatus = openTabs.map((t) => ({
     ...t,
@@ -489,12 +544,17 @@ const Index = () => {
             <div className="flex-1 bg-background/60" onClick={() => setMobilePanel("none")} />
             <div className="w-72 bg-card border-l border-border h-full flex flex-col">
               <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-                <span className="text-xs font-semibold text-muted-foreground uppercase">Interact</span>
+                <span className="text-xs font-semibold text-muted-foreground uppercase">Assistant</span>
                 <button title="Close Interact" onClick={() => setMobilePanel("none")} className="text-muted-foreground hover:text-foreground">
                   <X className="h-4 w-4" />
                 </button>
               </div>
-              <ContractPanel contractId={contractId} onInvoke={handleInvoke} />
+              <AssistantSidebar
+                activeFile={activeFileContext}
+                contractId={contractId}
+                onInvoke={handleInvoke}
+                lastInvocation={lastInvocation}
+              />
             </div>
           </div>
         )}
@@ -582,8 +642,13 @@ const Index = () => {
         {/* Desktop Right Sidebar */}
         <div className="hidden md:flex shrink-0 z-10">
           {showPanel && (
-            <div className="w-64 border-l border-border bg-card">
-              <ContractPanel contractId={contractId} onInvoke={handleInvoke} />
+            <div className="w-[22rem] border-l border-border bg-card">
+              <AssistantSidebar
+                activeFile={activeFileContext}
+                contractId={contractId}
+                onInvoke={handleInvoke}
+                lastInvocation={lastInvocation}
+              />
             </div>
           )}
           <div className="flex flex-col bg-card border-l border-border h-full">
