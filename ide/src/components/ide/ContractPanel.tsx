@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Rocket, ExternalLink, UserPlus, ShieldAlert, Key, Trash2, Braces, Download, ReceiptText, FileCode2 } from "lucide-react";
 import { useIdentityStore } from "@/store/useIdentityStore";
 import { useFileStore } from "@/store/useFileStore";
-import { resolveContractSchema } from "@/lib/contractAbiParser";
+import { resolveContractSchema, type FunctionSpec } from "@/lib/contractAbiParser";
 import { createBindingsExportFromWorkspace, downloadBindingsFile } from "@/lib/bindingsGenerator";
 import type { InvocationDebugData } from "@/lib/invokeResult";
 import { CopyToClipboard } from "@/components/ide/CopyToClipboard";
@@ -25,7 +25,7 @@ import { toast } from "sonner";
 
 interface ContractPanelProps {
   contractId: string | null;
-  onInvoke: (fn: string, args: string) => void;
+  onInvoke: (fn: string, args: string, isSimulation: boolean) => void;
   lastInvocation?: InvocationDebugData | null;
 }
 
@@ -38,6 +38,8 @@ export function ContractPanel({ contractId, onInvoke, lastInvocation = null }: C
   const [isResolvingAbi, setIsResolvingAbi] = useState(false);
   const [schemaPreview, setSchemaPreview] = useState("");
   const [schemaSource, setSchemaSource] = useState("");
+  const [isSimulation, setIsSimulation] = useState(true);
+  const [functions, setFunctions] = useState<FunctionSpec[]>([]);
 
   const { identities, activeContext, setActiveContext, generateNewIdentity, deleteIdentity } = useIdentityStore();
   const { files, activeTabPath, horizonUrl, customRpcUrl, networkPassphrase, network } = useFileStore();
@@ -71,6 +73,7 @@ export function ContractPanel({ contractId, onInvoke, lastInvocation = null }: C
 
       setSchemaPreview(result.preview);
       setSchemaSource(result.source === "contract-id" ? `Fetched from ${rpcUrl}` : `Parsed from ${result.source}`);
+      setFunctions(result.functions);
       toast.success(`Parsed ${result.functions.length} contract function${result.functions.length === 1 ? "" : "s"}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to parse contract ABI";
@@ -247,13 +250,40 @@ export function ContractPanel({ contractId, onInvoke, lastInvocation = null }: C
 
             <div className="space-y-2">
               <label className="text-[10px] md:text-xs text-muted-foreground font-mono block">Function</label>
-              <input
-                type="text"
-                value={fnName}
-                onChange={(e) => setFnName(e.target.value)}
-                className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                placeholder="function_name"
-              />
+              {functions.length > 0 ? (
+                <Select
+                  value={fnName}
+                  onValueChange={(value) => {
+                    setFnName(value);
+                    const fn = functions.find(f => f.name === value);
+                    if (fn?.mutability === 'readonly') {
+                      setIsSimulation(true);
+                    } else if (fn?.mutability === 'write') {
+                      setIsSimulation(false);
+                    }
+                    // else keep current
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs bg-muted border-border">
+                    <SelectValue placeholder="Select function" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {functions.map(fn => (
+                      <SelectItem key={fn.name} value={fn.name}>
+                        {fn.name} {fn.mutability === 'readonly' ? '(read-only)' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <input
+                  type="text"
+                  value={fnName}
+                  onChange={(e) => setFnName(e.target.value)}
+                  className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  placeholder="function_name"
+                />
+              )}
               <label className="text-[10px] md:text-xs text-muted-foreground font-mono block">Arguments (JSON)</label>
               <textarea
                 value={args}
@@ -262,13 +292,26 @@ export function ContractPanel({ contractId, onInvoke, lastInvocation = null }: C
                 className="w-full bg-muted border border-border rounded px-2 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary resize-none"
                 placeholder='["arg1", "arg2"]'
               />
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="simulation-toggle"
+                  checked={isSimulation}
+                  onChange={(e) => setIsSimulation(e.target.checked)}
+                  disabled={functions.find(f => f.name === fnName)?.mutability === 'readonly'}
+                  className="h-3 w-3"
+                />
+                <label htmlFor="simulation-toggle" className="text-[10px] md:text-xs text-muted-foreground font-mono">
+                  Treat as Query / Simulation only
+                </label>
+              </div>
               <button
-                onClick={() => onInvoke(fnName, args)}
+                onClick={() => onInvoke(fnName, args, isSimulation)}
                 disabled={!contractId || !activeContext}
                 className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-30 transition-colors"
               >
                 <Rocket className="h-3.5 w-3.5" />
-                Invoke
+                {isSimulation ? "Run Query" : "Send Tx"}
               </button>
               {!activeContext && identities.length > 0 && (
                 <p className="text-[9px] text-destructive text-center italic mt-1">Select an identity to invoke</p>
