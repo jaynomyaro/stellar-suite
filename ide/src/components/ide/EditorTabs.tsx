@@ -14,6 +14,15 @@ import { KeyboardEvent, useRef } from "react";
 // Types
 // ---------------------------------------------------------------------------
 import { useWorkspaceStore } from "@/store/workspaceStore";
+import {
+  Circle,
+  FileCode,
+  FileJson,
+  FileText,
+  Settings,
+  X,
+} from "lucide-react";
+import { KeyboardEvent, useRef, useCallback } from "react";
 
 export interface TabInfo {
   path: string[];
@@ -22,12 +31,14 @@ export interface TabInfo {
 }
 
 interface EditorTabsProps {
+  tabs?: TabInfo[];
+  activeTab?: string;
   onTabSelect?: (path: string[]) => void;
   onTabClose?: (path: string[]) => void;
 }
 
 // ---------------------------------------------------------------------------
-// File icon resolver (matches FileTree.tsx convention)
+// File icon resolver
 // ---------------------------------------------------------------------------
 
 function FileIcon({ name }: { name: string }) {
@@ -78,31 +89,18 @@ function FileIcon({ name }: { name: string }) {
 // EditorTabs
 // ---------------------------------------------------------------------------
 
-/**
- * EditorTabs
- *
- * Horizontal, horizontally-scrollable tab bar above the Monaco editor.
- *
- * - Active tab has a top primary-colour border (VS Code style)
- * - Dirty (unsaved) tabs show a filled dot instead of the X button
- * - Hovering a dirty tab swaps the dot for the X so it can be closed
- * - Keyboard: Left/Right arrows move focus between tabs; Enter selects; Delete/Backspace closes
- */
 export function EditorTabs({ onTabSelect, onTabClose }: EditorTabsProps) {
-  const { openTabs, activeTabPath, setActiveTabPath, closeTab, unsavedFiles } =
-    useWorkspaceStore();
+  const { openTabs, activeTabPath, setActiveTabPath, closeTab, unsavedFiles } = useWorkspaceStore();
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   const tabsWithStatus = openTabs.map((t) => ({
     ...t,
     unsaved: unsavedFiles.has(t.path.join("/")),
   }));
+
   const activeTabKey = activeTabPath.join("/");
 
-  const handleKeyDown = (
-    e: KeyboardEvent<HTMLButtonElement>,
-    path: string[],
-  ) => {
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLButtonElement>, path: string[]) => {
     const keys = tabsWithStatus.map((t) => t.path.join("/"));
     const currentIdx = keys.indexOf(path.join("/"));
 
@@ -127,15 +125,10 @@ export function EditorTabs({ onTabSelect, onTabClose }: EditorTabsProps) {
       if (onTabClose) onTabClose(path);
       else closeTab(path);
     }
-  };
+  }, [tabsWithStatus, onTabSelect, onTabClose, setActiveTabPath, closeTab]);
 
   if (tabsWithStatus.length === 0) {
-    return (
-      <div
-        className="h-9 bg-secondary border-b border-border"
-        aria-label="No open tabs"
-      />
-    );
+    return <div className="h-9 bg-secondary border-b border-border" aria-label="No open tabs" />;
   }
 
   return (
@@ -147,7 +140,7 @@ export function EditorTabs({ onTabSelect, onTabClose }: EditorTabsProps) {
       {tabsWithStatus.map((tab) => {
         const key = tab.path.join("/");
         const isActive = key === activeTabKey;
-        const isDirty = !!tab.unsaved;
+        const isDirty = tab.unsaved;
 
         return (
           <button
@@ -196,12 +189,12 @@ export function EditorTabs({ onTabSelect, onTabClose }: EditorTabsProps) {
             >
               {isDirty ? (
                 <>
-                  {/* Dot • visible by default, hidden on group hover */}
+                  {/* Dot visible by default, hidden on group hover */}
                   <Circle
                     className="h-2 w-2 fill-primary text-primary group-hover:hidden"
                     aria-hidden="true"
                   />
-                  {/* X • hidden by default, shown on group hover */}
+                  {/* X hidden by default, shown on group hover */}
                   <X
                     className="h-3 w-3 hidden group-hover:block"
                     aria-hidden="true"
