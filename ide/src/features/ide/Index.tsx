@@ -23,6 +23,7 @@ import { TestingView, TemplatesView } from "@/components/ide/TestingView";
 import { GeneratePropertyTest } from "@/components/Testing/GeneratePropertyTest";
 import { useProptestOutputWatcher } from "@/hooks/useProptestOutputWatcher";
 import { EventsPane } from "@/components/ide/EventsPane";
+import { InspectorPane } from "@/components/ide/InspectorPane";
 import { StatusBar } from "@/components/ide/StatusBar";
 import { Terminal } from "@/components/ide/Terminal";
 // import TestExplorer from "@/components/ide/TestExplorer";
@@ -773,6 +774,7 @@ export default function Index() {
             ) : null}
             */}
             {leftSidebarTab === "git" ? <GitPane /> : null}
+            {leftSidebarTab === "inspector" ? <InspectorPane /> : null}
           </aside>
         ) : null}
 
