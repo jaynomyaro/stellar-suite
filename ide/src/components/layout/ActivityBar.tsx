@@ -5,6 +5,7 @@ import {
   Users,
   History,
   Search,
+  Beaker,
   ShieldAlert,
   Plug,
   PanelLeftClose,
@@ -21,6 +22,7 @@ export type ActivityTab =
   | "identities"
   | "search"
   | "security"
+  | "tests";
   | "outline";
 
 interface ActivityBarProps {
@@ -81,6 +83,12 @@ const tabs: ActivityBarTab[] = [
     title: "Security & Clippy",
   },
   {
+    id: "tests",
+    icon: <Beaker className="h-5 w-5" />,
+    label: "Tests",
+    title: "Test Explorer",
+  },
+  {
     id: "oracle",
     icon: <Plug className="h-5 w-5" />,
     label: "Oracle",
@@ -96,7 +104,6 @@ export function ActivityBar({
 }: ActivityBarProps) {
   return (
     <div className="hidden md:flex flex-col bg-sidebar border-r border-border shrink-0 w-12 items-center py-4 gap-4">
-      {/* Activity Tabs */}
       <div className="flex flex-col gap-2">
         {tabs.map((tab) => (
           <button
@@ -116,9 +123,7 @@ export function ActivityBar({
         ))}
       </div>
 
-      {/* Bottom Actions */}
       <div className="mt-auto border-t border-border w-full pt-4 flex flex-col items-center gap-2">
-        {/* Toggle Sidebar */}
         <button
           onClick={onToggleSidebar}
           className="p-2 text-muted-foreground hover:text-foreground transition-colors"
@@ -132,7 +137,6 @@ export function ActivityBar({
           )}
         </button>
 
-        {/* Settings */}
         <button
           className="p-2 text-muted-foreground hover:text-foreground transition-colors rounded-md hover:bg-muted"
           title="Settings"
