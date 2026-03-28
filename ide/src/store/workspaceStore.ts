@@ -30,8 +30,9 @@ export type SidebarTab =
   | "tests"
   | "outline"
   | "inspector"
-  | "references";
-  | "binary-diff";
+  | "references"
+  | "binary-diff"
+  | "benchmarks";
 export type BuildState = "idle" | "building" | "success" | "error";
 
 export interface WorkspaceTextFile {

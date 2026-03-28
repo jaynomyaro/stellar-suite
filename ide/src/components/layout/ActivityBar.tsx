@@ -7,13 +7,13 @@ import {
   Search,
   Beaker,
   ShieldAlert,
-  Plug,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
   ListTree,
   Library,
   Binary,
+  BarChart2,
 } from "lucide-react";
 import { ReactNode } from "react";
 
@@ -26,9 +26,10 @@ export type ActivityTab =
   | "security"
   | "tests"
   | "outline"
-  | "references";
+  | "references"
   | "binary-diff"
-  | "oracle";
+  | "oracle"
+  | "benchmarks";
 
 interface ActivityBarProps {
   activeTab: ActivityTab;
@@ -104,6 +105,12 @@ const tabs: ActivityBarTab[] = [
     icon: <Library className="h-5 w-5" />,
     label: "References",
     title: "Find All References",
+  },
+  {
+    id: "benchmarks",
+    icon: <BarChart2 className="h-5 w-5" />,
+    label: "Benchmarks",
+    title: "Criterion Benchmark Dashboard",
   },
 ];
 
