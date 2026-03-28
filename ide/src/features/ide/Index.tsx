@@ -19,7 +19,6 @@ import { DiffEditorPane } from "@/components/editor/DiffEditorPane";
 // import { EditorTabs } from "@/components/ide/EditorTabs";
 import { FileExplorer } from "@/components/ide/FileExplorer";
 import { IdentitiesView } from "@/components/ide/IdentitiesView";
-import { OracleAssistant } from "@/components/ide/OracleAssistant";
 import { SearchPane } from "@/components/ide/SearchPane";
 import { SecurityView } from "@/components/ide/SecurityView";
 import { TestingView, TemplatesView } from "@/components/ide/TestingView";
@@ -36,6 +35,7 @@ import { TestResultsLog } from "@/components/terminal/TestResultsLog";
 import XdrInspector from "@/components/tools/XdrInspector";
 // import { Toolbar } from "@/components/ide/Toolbar";
 import { OutlineView } from "@/components/sidebar/OutlineView";
+import { FuzzingPanel } from "@/components/sidebar/FuzzingPanel";
 // import { ActivityBar } from "@/components/layout/ActivityBar";
 import { StarterProjectWizard } from "@/components/modals/StarterProjectWizard";
 import { ActivityBar } from "@/components/layout/ActivityBar";
@@ -901,7 +901,7 @@ export default function Index() {
       /> */}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* <ActivityBar
+        <ActivityBar
           activeTab={leftSidebarTab}
           onTabChange={(tab) => {
             if (leftSidebarTab === tab && showExplorer) {
@@ -914,7 +914,7 @@ export default function Index() {
           }}
           sidebarVisible={showExplorer}
           onToggleSidebar={() => setShowExplorer(!showExplorer)}
-        /> */}
+        />
 
         {showExplorer ? (
           <aside className="hidden w-72 shrink-0 border-r border-border bg-sidebar md:block">
@@ -963,30 +963,10 @@ export default function Index() {
                 </div>
               </div>
             ) : null}
-            {/*
             {leftSidebarTab === "tests" ? (
-              <TestExplorer
-                files={flattenWorkspaceFiles(files)}
-                onOpenTest={(test) => {
-                  const pathParts = test.filePath.split("/");
-                  const name = pathParts[pathParts.length - 1];
-                  addTab(pathParts, name);
-                  setActiveTabPath(pathParts);
-                }}
-                onRunTest={(test) => {
-                  setTerminalExpanded(true);
-                  if (mockLedgerState.entries.length > 0) {
-                    appendTerminalOutput(
-                      `Injecting ${mockLedgerState.entries.length} mock ledger ${mockLedgerState.entries.length === 1 ? "entry" : "entries"} via --ledger-snapshot...\r\n`,
-                    );
-                  }
-                  appendTerminalOutput(
-                    `Running test ${test.testName} (${test.kind}) in ${test.filePath}:${test.line}\r\n`,
-                  );
-                }}
-              />
+              <TestingSidebar />
             ) : null}
-            */}
+            {leftSidebarTab === "fuzzing" ? <FuzzingPanel /> : null}
             {leftSidebarTab === "git" ? <GitPane /> : null}
             {leftSidebarTab === "references" ? <ReferencesPane /> : null}
             {leftSidebarTab === "binary-diff" ? (

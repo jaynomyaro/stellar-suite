@@ -6,13 +6,14 @@ import {
   History,
   Search,
   Beaker,
+  Bug,
   ShieldAlert,
-  Plug,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
   ListTree,
   Library,
+  FileSearch,
   Binary,
 } from "lucide-react";
 import { ReactNode } from "react";
@@ -25,10 +26,11 @@ export type ActivityTab =
   | "search"
   | "security"
   | "tests"
+  | "fuzzing"
   | "outline"
+  | "inspector"
   | "references"
-  | "binary-diff"
-  | "oracle";
+  | "binary-diff";
 
 interface ActivityBarProps {
   activeTab: ActivityTab;
@@ -100,16 +102,22 @@ const tabs: ActivityBarTab[] = [
     title: "Test Explorer",
   },
   {
+    id: "fuzzing",
+    icon: <Bug className="h-5 w-5" />,
+    label: "Fuzzing",
+    title: "cargo-fuzz Security Testing",
+  },
+  {
+    id: "inspector",
+    icon: <FileSearch className="h-5 w-5" />,
+    label: "Inspector",
+    title: "WASM Contract Inspector",
+  },
+  {
     id: "references",
     icon: <Library className="h-5 w-5" />,
     label: "References",
     title: "Find All References",
-  },
-  {
-    id: "oracle",
-    icon: <Plug className="h-5 w-5" />,
-    label: "Oracle",
-    title: "Oracle Integration Assistant",
   },
 ];
 

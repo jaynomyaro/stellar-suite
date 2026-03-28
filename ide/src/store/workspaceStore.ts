@@ -28,6 +28,7 @@ export type SidebarTab =
   | "search"
   | "security"
   | "tests"
+  | "fuzzing"
   | "outline"
   | "inspector"
   | "references"
