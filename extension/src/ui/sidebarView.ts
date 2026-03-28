@@ -8,8 +8,10 @@ export interface ContractInfo {
     name: string;
     path: string;
     contractId?: string;
-    hasWasm: boolean;
+    hasWasm?: boolean;
     lastDeployed?: string;
+    wasmSize?: number;
+    wasmSizeFormatted?: string;
 }
 
 export interface DeploymentRecord {
@@ -105,7 +107,12 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
                                 contractId: message.contractId
                             });
                             break;
-
+                        case 'analyzeSecurity':
+                            if (message.contractPath) {
+                                this._context.workspaceState.update('selectedContractPath', message.contractPath);
+                            }
+                            await vscode.commands.executeCommand('stellarSuite.analyzeSecurity');
+                            break;
                         case 'getCliHistory':
                             const history = this.getCliHistory();
                             webviewView.webview.postMessage({
@@ -163,6 +170,18 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
             let contractId: string | undefined;
             let functions: ContractFunction[] | undefined;
+            let wasmSize: number | undefined;
+            let wasmSizeFormatted: string | undefined;
+
+            // Get WASM file size if it exists
+            if (hasWasm && wasmPath) {
+                const stats = fs.statSync(wasmPath);
+                wasmSize = stats.size;
+                if (wasmSize) {
+                    wasmSizeFormatted = this.formatFileSize(wasmSize);
+                }
+            }
+
             const deploymentHistory = this._context.workspaceState.get<DeploymentRecord[]>(
                 'stellarSuite.deploymentHistory',
                 []
@@ -180,14 +199,14 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
                 contractId = lastDeployment.contractId;
             }
 
-
-
             contracts.push({
                 name: contractName,
                 path: dir,
                 contractId,
                 hasWasm,
-                lastDeployed: lastDeployment?.deployedAt
+                lastDeployed: lastDeployment?.deployedAt,
+                wasmSize,
+                wasmSizeFormatted
             });
         }
 
@@ -210,6 +229,14 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     }
 
 
+
+    private formatFileSize(bytes: number): string {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
 
     public showDeploymentResult(deployment: DeploymentRecord) {
         const deploymentHistory = this._context.workspaceState.get<DeploymentRecord[]>(

@@ -127,11 +127,30 @@ export class SidebarWebView {
         .filter-select {
             padding: 6px 8px;
             border: 1px solid var(--vscode-input-border);
-            background: var(--vscode-input-background);
-            color: var(--vscode-input-foreground);
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
             border-radius: 6px;
             font-size: 11px;
+        }
+        .wasm-size {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            margin: 2px 0;
+            font-family: var(--vscode-editor-font-family);
+        }
+        .btn-security {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 11px;
             cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-security:hover {
+            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+            transform: translateY(-1px);
         }
         .contract-item, .deployment-item {
             background: var(--vscode-sideBar-background);
@@ -372,8 +391,12 @@ export class SidebarWebView {
             vscode.postMessage({ command: 'simulate', contractId: contractId, functionName: functionName });
         }
         
-        function inspectContract(contractId) {
-            vscode.postMessage({ command: 'inspectContract', contractId: contractId });
+        function contractInfo(contractId) {
+            vscode.postMessage({ command: 'contractInfo', contractId: contractId });
+        }
+        
+        function analyzeSecurity(contractPath) {
+            vscode.postMessage({ command: 'analyzeSecurity', contractPath: contractPath });
         }
         
         function runInvoke(contractId, functionName) {
@@ -471,6 +494,9 @@ export class SidebarWebView {
                 ? '<span class="status-badge-success">Built</span>'
                 : '';
             const functionsHtml = '';
+            const sizeInfo = contract.wasmSizeFormatted 
+                ? `<div class="wasm-size">Size: ${this.escapeHtml(contract.wasmSizeFormatted)}</div>`
+                : '';
 
             return `
                 <div class="contract-item">
@@ -479,6 +505,7 @@ export class SidebarWebView {
                         ${buildStatusBadge}
                     </div>
                     <div class="contract-path">${this.escapeHtml(contract.path)}</div>
+                    ${sizeInfo}
                     ${contract.contractId ? `<div class="contract-id clipboard-copy" onclick="copyToClipboard('${this.escapeHtml(contract.contractId)}')" title="Click to copy Contract ID">ID: ${this.escapeHtml(contract.contractId)} <span style="font-size: 10px; opacity: 0.7;">[COPY]</span></div>` : ''}
                     ${contract.lastDeployed ? `<div class="timestamp">Deployed: ${new Date(contract.lastDeployed).toLocaleString()}</div>` : ''}
                     ${functionsHtml}
@@ -488,6 +515,7 @@ export class SidebarWebView {
                         ${contract.contractId ? `<button class="btn btn-secondary" onclick="simulate('${this.escapeHtml(contract.contractId)}')">Simulate</button>` : ''}
                         ${contract.contractId ? `<button class="btn btn-secondary" onclick="runInvoke('${this.escapeHtml(contract.contractId)}')">Run</button>` : ''}
                         ${contract.contractId ? `<button class="btn btn-secondary" onclick="contractInfo('${this.escapeHtml(contract.contractId)}')">Info</button>` : ''}
+                        <button class="btn btn-security" onclick="analyzeSecurity('${this.escapeHtml(contract.path)}')">🛡️ Security</button>
                     </div>
                 </div>
             `;

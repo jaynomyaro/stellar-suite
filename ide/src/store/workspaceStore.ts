@@ -1,4 +1,5 @@
 ﻿import {
+import {
   DEFAULT_CUSTOM_RPC,
   NETWORK_CONFIG,
   type CustomHeaders,
@@ -8,6 +9,7 @@ import { FileNode, sampleContracts } from "@/lib/sample-contracts";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { idbStorage } from "@/utils/idbStorage";
+import { persist } from "zustand/middleware";
 
 interface TabInfo {
   path: string[];
@@ -56,15 +58,20 @@ export interface MockLedgerState {
 }
 
 interface WorkspaceState {
+  // File System State
   files: FileNode[];
   openTabs: TabInfo[];
   activeTabPath: string[];
   unsavedFiles: Set<string>;
+
+  // Network State
   network: NetworkKey;
   horizonUrl: string;
   networkPassphrase: string;
   customRpcUrl: string;
   customHeaders: CustomHeaders;
+
+  // UI Layout State
   terminalExpanded: boolean;
   terminalOutput: string;
   isCompiling: boolean;
@@ -80,6 +87,11 @@ interface WorkspaceState {
   mockLedgerState: MockLedgerState;
   diffViewPath: string[] | null;
   hydrationComplete: boolean;
+
+  // Hydration State
+  hydrationComplete: boolean;
+
+  // File Actions
   setFiles: (files: FileNode[]) => void;
   setActiveTabPath: (path: string[]) => void;
   setOpenTabs: (tabs: TabInfo[]) => void;
@@ -91,12 +103,19 @@ interface WorkspaceState {
   createFolder: (parentPath: string[], name: string) => void;
   deleteNode: (path: string[]) => void;
   renameNode: (path: string[], newName: string) => void;
+
+  // Network Actions
   setNetwork: (network: NetworkKey) => void;
   setHorizonUrl: (url: string) => void;
   setNetworkPassphrase: (passphrase: string) => void;
   setCustomRpcUrl: (url: string) => void;
   setCustomHeaders: (headers: CustomHeaders) => void;
   setTerminalExpanded: (expanded: boolean | ((prev: boolean) => boolean)) => void;
+
+  // UI Actions
+  setTerminalExpanded: (
+    expanded: boolean | ((prev: boolean) => boolean),
+  ) => void;
   setTerminalOutput: (output: string | ((prev: string) => string)) => void;
   setIsCompiling: (isCompiling: boolean) => void;
   setBuildState: (state: BuildState) => void;
@@ -112,6 +131,8 @@ interface WorkspaceState {
   clearMockLedgerState: () => void;
   appendTerminalOutput: (chunk: string) => void;
   setDiffViewPath: (path: string[] | null) => void;
+
+  // Misc Actions
   setHydrationComplete: (ready: boolean) => void;
 }
 
@@ -129,6 +150,10 @@ const findNode = (nodes: FileNode[], pathParts: string[]): FileNode | null => {
 };
 
 const findParent = (nodes: FileNode[], pathParts: string[]): FileNode[] | null => {
+const findParent = (
+  nodes: FileNode[],
+  pathParts: string[],
+): FileNode[] | null => {
   if (pathParts.length <= 1) return nodes;
   const parent = findNode(nodes, pathParts.slice(0, -1));
   return parent?.children ?? null;
@@ -153,15 +178,20 @@ export function flattenWorkspaceFiles(
 export const useWorkspaceStore = create<WorkspaceState>()(
   persist(
     (set, get) => ({
+      // Initial File State
       files: cloneFiles(sampleContracts),
       openTabs: [{ path: ["hello_world", "lib.rs"], name: "lib.rs" }],
       activeTabPath: ["hello_world", "lib.rs"],
       unsavedFiles: new Set<string>(),
+
+      // Initial Network State
       network: "testnet",
       horizonUrl: NETWORK_CONFIG.testnet.horizon,
       networkPassphrase: NETWORK_CONFIG.testnet.passphrase,
       customRpcUrl: DEFAULT_CUSTOM_RPC,
       customHeaders: {},
+
+      // Initial UI State
       terminalExpanded: true,
       terminalOutput: "",
       isCompiling: false,
@@ -177,6 +207,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       mockLedgerState: { entries: [] },
       diffViewPath: null,
       hydrationComplete: false,
+
+      // Initial Hydration State
+      hydrationComplete: false,
+
+      // File Actions Implementation
       setFiles: (files) => set({ files }),
       setActiveTabPath: (path) => set({ activeTabPath: path }),
       setOpenTabs: (tabs) => set({ openTabs: tabs }),
@@ -201,6 +236,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         const nextUnsaved = new Set(unsavedFiles);
         nextUnsaved.delete(key);
         set({ openTabs: nextTabs, activeTabPath: nextActivePath, unsavedFiles: nextUnsaved });
+        set({
+          openTabs: nextTabs,
+          activeTabPath: nextActivePath,
+          unsavedFiles: nextUnsaved,
+        });
       },
       updateFileContent: (path, content) => {
         const key = path.join("/");
@@ -225,11 +265,20 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         const { files } = get();
         const nextFiles = cloneFiles(files);
         const parent = parentPath.length === 0 ? nextFiles : findNode(nextFiles, parentPath)?.children;
+        const parent =
+          parentPath.length === 0
+            ? nextFiles
+            : findNode(nextFiles, parentPath)?.children;
         if (parent) {
           parent.push({
             name,
             type: "file",
             language: name.endsWith(".rs") ? "rust" : name.endsWith(".toml") ? "toml" : "text",
+            language: name.endsWith(".rs")
+              ? "rust"
+              : name.endsWith(".toml")
+                ? "toml"
+                : "text",
             content,
           });
           set({ files: nextFiles });
@@ -240,6 +289,10 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         const { files } = get();
         const nextFiles = cloneFiles(files);
         const parent = parentPath.length === 0 ? nextFiles : findNode(nextFiles, parentPath)?.children;
+        const parent =
+          parentPath.length === 0
+            ? nextFiles
+            : findNode(nextFiles, parentPath)?.children;
         if (parent) {
           parent.push({ name, type: "folder", children: [] });
           set({ files: nextFiles });
@@ -271,6 +324,11 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             if (tKey === oldKey || tKey.startsWith(oldKey + "/")) {
               const updatedPath = [...nextPath, ...t.path.slice(path.length)];
               return { ...t, path: updatedPath, name: updatedPath[updatedPath.length - 1] };
+              return {
+                ...t,
+                path: updatedPath,
+                name: updatedPath[updatedPath.length - 1],
+              };
             }
             return t;
           });
@@ -301,6 +359,57 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       setTerminalOutput: (output) =>
         set((state) => ({
           terminalOutput: typeof output === "function" ? output(state.terminalOutput) : output,
+          if (
+            activeTabPath.join("/") === oldKey ||
+            activeTabPath.join("/").startsWith(oldKey + "/")
+          ) {
+            nextActivePath = [...nextPath, ...activeTabPath.slice(path.length)];
+          }
+          set({
+            files: nextFiles,
+            openTabs: nextTabs,
+            activeTabPath: nextActivePath,
+          });
+        }
+      },
+
+      // Network Actions Implementation
+      setNetwork: (network) => {
+        const config = NETWORK_CONFIG[network] || NETWORK_CONFIG.testnet;
+        const currentCustomRpc = get().customRpcUrl || DEFAULT_CUSTOM_RPC;
+        const horizonUrl =
+          network === "local" ? currentCustomRpc : config.horizon;
+        set({
+          network,
+          horizonUrl,
+          networkPassphrase: config.passphrase,
+        });
+      },
+      setHorizonUrl: (url) => set({ horizonUrl: url }),
+      setNetworkPassphrase: (passphrase) =>
+        set({ networkPassphrase: passphrase }),
+      setCustomRpcUrl: (customRpcUrl) => {
+        set({ customRpcUrl });
+        if (get().network === "local") {
+          set({ horizonUrl: customRpcUrl });
+        }
+      },
+      setCustomHeaders: (customHeaders) => set({ customHeaders }),
+
+      // UI Actions Implementation
+      setTerminalExpanded: (expanded) =>
+        set((state) => ({
+          terminalExpanded:
+            typeof expanded === "function"
+              ? expanded(state.terminalExpanded)
+              : expanded,
+        })),
+      setTerminalOutput: (output) =>
+        set((state) => ({
+          terminalOutput:
+            typeof output === "function"
+              ? output(state.terminalOutput)
+              : output,
         })),
       setIsCompiling: (isCompiling) => set({ isCompiling }),
       setBuildState: (buildState) => set({ buildState }),
@@ -311,12 +420,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       setSaveStatus: (saveStatus) => set({ saveStatus }),
       setMobilePanel: (mobilePanel) => set({ mobilePanel }),
       setIsExplorerDragActive: (isExplorerDragActive) => set({ isExplorerDragActive }),
+      setIsExplorerDragActive: (isExplorerDragActive) =>
+        set({ isExplorerDragActive }),
       setLeftSidebarTab: (leftSidebarTab) => set({ leftSidebarTab }),
       setMockLedgerState: (mockLedgerState) => set({ mockLedgerState }),
       clearMockLedgerState: () => set({ mockLedgerState: { entries: [] } }),
       appendTerminalOutput: (chunk) =>
         set((state) => ({ terminalOutput: state.terminalOutput + chunk })),
       setDiffViewPath: (diffViewPath) => set({ diffViewPath }),
+
+      // Misc Actions Implementation
       setHydrationComplete: (ready) => set({ hydrationComplete: ready }),
     }),
     {
@@ -345,4 +458,5 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       },
     },
   ),
+);
 );

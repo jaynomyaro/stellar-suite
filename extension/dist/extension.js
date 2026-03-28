@@ -1567,6 +1567,8 @@ var require_contractDeployer = __commonJS({
           const output = stdout + stderr;
           const wasmMatch = output.match(/target\/wasm32[^\/]*\/release\/[^\s]+\.wasm/);
           let wasmPath;
+          let wasmSize;
+          let wasmSizeFormatted;
           if (wasmMatch) {
             wasmPath = path.join(contractPath, wasmMatch[0]);
           } else {
@@ -1585,10 +1587,17 @@ var require_contractDeployer = __commonJS({
               }
             }
           }
+          if (wasmPath && fs.existsSync(wasmPath)) {
+            const stats = fs.statSync(wasmPath);
+            wasmSize = stats.size;
+            wasmSizeFormatted = this.formatFileSize(wasmSize);
+          }
           return {
             success: true,
             output,
-            wasmPath
+            wasmPath,
+            wasmSize,
+            wasmSizeFormatted
           };
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : "Unknown error";
@@ -1687,6 +1696,30 @@ var require_contractDeployer = __commonJS({
       }
       async deployFromWasm(wasmPath) {
         return this.deployContract(wasmPath);
+      }
+      formatFileSize(bytes) {
+        if (bytes === 0)
+          return "0 B";
+        const k = 1024;
+        const sizes = ["B", "KB", "MB"];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+      }
+      checkWasmSize(wasmSize) {
+        const SIZE_WARNING_THRESHOLD = 500 * 1024;
+        const SIZE_LARGE_THRESHOLD = 1024 * 1024;
+        if (wasmSize > SIZE_LARGE_THRESHOLD) {
+          return {
+            warning: `WASM binary is very large (${this.formatFileSize(wasmSize)}). Consider optimizing to reduce deployment costs.`,
+            isLarge: true
+          };
+        } else if (wasmSize > SIZE_WARNING_THRESHOLD) {
+          return {
+            warning: `WASM binary is large (${this.formatFileSize(wasmSize)}). Consider using optimized builds.`,
+            isLarge: false
+          };
+        }
+        return { isLarge: false };
       }
     };
     exports2.ContractDeployer = ContractDeployer;
@@ -2338,6 +2371,13 @@ Building contract in: ${contractDir}`);
             outputChannel.appendLine("Build successful!");
             if (buildResult.wasmPath) {
               outputChannel.appendLine(`WASM file: ${buildResult.wasmPath}`);
+              if (buildResult.wasmSizeFormatted) {
+                outputChannel.appendLine(`WASM size: ${buildResult.wasmSizeFormatted}`);
+                const sizeCheck = deployer.checkWasmSize(buildResult.wasmSize);
+                if (sizeCheck.warning) {
+                  outputChannel.appendLine(`\u26A0\uFE0F  ${sizeCheck.warning}`);
+                }
+              }
             }
             if (buildResult.output) {
               outputChannel.appendLine("\n=== Full Build Output ===");
@@ -2422,6 +2462,195 @@ var require_installCli = __commonJS({
   }
 });
 
+// out/services/latencyMonitor.js
+var require_latencyMonitor = __commonJS({
+  "out/services/latencyMonitor.js"(exports2) {
+    "use strict";
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.LatencyMonitor = void 0;
+    var LatencyMonitor = class {
+      constructor(rpcUrl) {
+        this.measurements = [];
+        this.maxMeasurements = 20;
+        this.rpcUrl = rpcUrl.endsWith("/") ? rpcUrl.slice(0, -1) : rpcUrl;
+      }
+      /**
+       * Measure latency by making a lightweight RPC call
+       */
+      async measureLatency() {
+        const startTime = Date.now();
+        try {
+          const response = await fetch(`${this.rpcUrl}/health`, {
+            method: "GET",
+            signal: AbortSignal.timeout(1e4)
+          });
+          const latency = Date.now() - startTime;
+          if (response.ok) {
+            const result = {
+              latency,
+              success: true,
+              timestamp: Date.now()
+            };
+            this.addMeasurement(result);
+            return result;
+          }
+          return await this.measureLatencyViaRpc();
+        } catch (error) {
+          try {
+            return await this.measureLatencyViaRpc();
+          } catch (rpcError) {
+            const latency = Date.now() - startTime;
+            const result = {
+              latency,
+              success: false,
+              timestamp: Date.now(),
+              error: rpcError instanceof Error ? rpcError.message : "Unknown error"
+            };
+            this.addMeasurement(result);
+            return result;
+          }
+        }
+      }
+      /**
+       * Measure latency using RPC getHealth method
+       */
+      async measureLatencyViaRpc() {
+        const startTime = Date.now();
+        try {
+          const response = await fetch(`${this.rpcUrl}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "getHealth"
+            }),
+            signal: AbortSignal.timeout(1e4)
+          });
+          const latency = Date.now() - startTime;
+          if (response.ok) {
+            const result = {
+              latency,
+              success: true,
+              timestamp: Date.now()
+            };
+            this.addMeasurement(result);
+            return result;
+          }
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        } catch (error) {
+          const latency = Date.now() - startTime;
+          const result = {
+            latency,
+            success: false,
+            timestamp: Date.now(),
+            error: error instanceof Error ? error.message : "Unknown error"
+          };
+          this.addMeasurement(result);
+          return result;
+        }
+      }
+      /**
+       * Add measurement to history
+       */
+      addMeasurement(result) {
+        this.measurements.push(result);
+        if (this.measurements.length > this.maxMeasurements) {
+          this.measurements.shift();
+        }
+        if (this.onLatencyUpdate) {
+          this.onLatencyUpdate(result);
+        }
+      }
+      /**
+       * Get network health statistics
+       */
+      getNetworkHealth() {
+        if (this.measurements.length === 0) {
+          return {
+            currentLatency: -1,
+            averageLatency: -1,
+            minLatency: -1,
+            maxLatency: -1,
+            successRate: 0,
+            measurements: 0
+          };
+        }
+        const successfulMeasurements = this.measurements.filter((m) => m.success);
+        const latencies = successfulMeasurements.map((m) => m.latency);
+        const lastMeasurement = this.measurements[this.measurements.length - 1];
+        return {
+          currentLatency: lastMeasurement.success ? lastMeasurement.latency : -1,
+          averageLatency: latencies.length > 0 ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : -1,
+          minLatency: latencies.length > 0 ? Math.min(...latencies) : -1,
+          maxLatency: latencies.length > 0 ? Math.max(...latencies) : -1,
+          successRate: successfulMeasurements.length / this.measurements.length * 100,
+          measurements: this.measurements.length,
+          lastError: lastMeasurement.success ? void 0 : lastMeasurement.error
+        };
+      }
+      /**
+       * Start monitoring with specified interval
+       */
+      startMonitoring(intervalSeconds = 30, callback) {
+        this.onLatencyUpdate = callback;
+        this.measureLatency();
+        this.intervalId = setInterval(() => {
+          this.measureLatency();
+        }, intervalSeconds * 1e3);
+      }
+      /**
+       * Stop monitoring
+       */
+      stopMonitoring() {
+        if (this.intervalId) {
+          clearInterval(this.intervalId);
+          this.intervalId = void 0;
+        }
+        this.onLatencyUpdate = void 0;
+      }
+      /**
+       * Update RPC URL
+       */
+      updateRpcUrl(newUrl) {
+        this.rpcUrl = newUrl.endsWith("/") ? newUrl.slice(0, -1) : newUrl;
+        this.measurements = [];
+      }
+      /**
+       * Get color based on latency
+       */
+      static getLatencyColor(latency) {
+        if (latency < 0) {
+          return "gray";
+        }
+        if (latency < 100) {
+          return "green";
+        }
+        if (latency < 500) {
+          return "orange";
+        }
+        return "red";
+      }
+      /**
+       * Get status icon based on latency
+       */
+      static getLatencyIcon(latency) {
+        if (latency < 0) {
+          return "$(question)";
+        }
+        if (latency < 100) {
+          return "$(check)";
+        }
+        if (latency < 500) {
+          return "$(warning)";
+        }
+        return "$(error)";
+      }
+    };
+    exports2.LatencyMonitor = LatencyMonitor;
+  }
+});
+
 // out/ui/networkStatusBar.js
 var require_networkStatusBar = __commonJS({
   "out/ui/networkStatusBar.js"(exports2) {
@@ -2459,28 +2688,86 @@ var require_networkStatusBar = __commonJS({
       return result;
     };
     Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.updateNetworkStatusBar = exports2.initNetworkStatusBar = void 0;
+    exports2.disposeNetworkStatusBar = exports2.getLatencyMonitor = exports2.updateNetworkStatusBar = exports2.initNetworkStatusBar = void 0;
     var vscode2 = __importStar2(require("vscode"));
-    var statusBarItem;
+    var latencyMonitor_1 = require_latencyMonitor();
+    var networkStatusBarItem;
+    var latencyStatusBarItem;
+    var latencyMonitor;
     async function initNetworkStatusBar(context) {
-      statusBarItem = vscode2.window.createStatusBarItem(vscode2.StatusBarAlignment.Left, 100);
-      statusBarItem.command = "stellarSuite.switchNetwork";
-      context.subscriptions.push(statusBarItem);
+      networkStatusBarItem = vscode2.window.createStatusBarItem(vscode2.StatusBarAlignment.Left, 100);
+      networkStatusBarItem.command = "stellarSuite.switchNetwork";
+      context.subscriptions.push(networkStatusBarItem);
+      latencyStatusBarItem = vscode2.window.createStatusBarItem(vscode2.StatusBarAlignment.Left, 99);
+      latencyStatusBarItem.command = "stellarSuite.showNetworkHealth";
+      context.subscriptions.push(latencyStatusBarItem);
       await updateNetworkStatusBar();
-      statusBarItem.show();
+      networkStatusBarItem.show();
+      latencyStatusBarItem.show();
+      await startLatencyMonitoring();
+      context.subscriptions.push(vscode2.workspace.onDidChangeConfiguration(async (e) => {
+        if (e.affectsConfiguration("stellarSuite.rpcUrl") || e.affectsConfiguration("stellarSuite.network")) {
+          await updateNetworkStatusBar();
+          await startLatencyMonitoring();
+        }
+      }));
     }
     exports2.initNetworkStatusBar = initNetworkStatusBar;
     async function updateNetworkStatusBar() {
       try {
         const config = vscode2.workspace.getConfiguration("stellarSuite");
         const currentNetwork = config.get("network") || "testnet";
-        statusBarItem.text = `$(globe) Stellar: ${currentNetwork}`;
-        statusBarItem.tooltip = "Click to switch Stellar Network";
+        networkStatusBarItem.text = `$(globe) Stellar: ${currentNetwork}`;
+        networkStatusBarItem.tooltip = "Click to switch Stellar Network";
       } catch (e) {
-        statusBarItem.text = `$(globe) Stellar: testnet`;
+        networkStatusBarItem.text = `$(globe) Stellar: testnet`;
       }
     }
     exports2.updateNetworkStatusBar = updateNetworkStatusBar;
+    async function startLatencyMonitoring() {
+      if (latencyMonitor) {
+        latencyMonitor.stopMonitoring();
+      }
+      const config = vscode2.workspace.getConfiguration("stellarSuite");
+      const rpcUrl = config.get("rpcUrl") || "https://soroban-testnet.stellar.org:443";
+      latencyMonitor = new latencyMonitor_1.LatencyMonitor(rpcUrl);
+      latencyMonitor.startMonitoring(30, (result) => {
+        updateLatencyStatusBar(result);
+      });
+      latencyStatusBarItem.text = "$(sync~spin) ---ms";
+      latencyStatusBarItem.tooltip = "Measuring RPC latency...";
+    }
+    function updateLatencyStatusBar(result) {
+      if (result.success) {
+        const icon = latencyMonitor_1.LatencyMonitor.getLatencyIcon(result.latency);
+        const color = latencyMonitor_1.LatencyMonitor.getLatencyColor(result.latency);
+        latencyStatusBarItem.text = `${icon} ${result.latency}ms`;
+        latencyStatusBarItem.tooltip = `RPC Latency: ${result.latency}ms (${color})
+Click for detailed network health`;
+        if (color === "red") {
+          latencyStatusBarItem.backgroundColor = new vscode2.ThemeColor("statusBarItem.errorBackground");
+        } else if (color === "orange") {
+          latencyStatusBarItem.backgroundColor = new vscode2.ThemeColor("statusBarItem.warningBackground");
+        } else {
+          latencyStatusBarItem.backgroundColor = void 0;
+        }
+      } else {
+        latencyStatusBarItem.text = "$(error) ---ms";
+        latencyStatusBarItem.tooltip = `RPC Error: ${result.error || "Unknown error"}
+Click for details`;
+        latencyStatusBarItem.backgroundColor = new vscode2.ThemeColor("statusBarItem.errorBackground");
+      }
+    }
+    function getLatencyMonitor() {
+      return latencyMonitor;
+    }
+    exports2.getLatencyMonitor = getLatencyMonitor;
+    function disposeNetworkStatusBar() {
+      if (latencyMonitor) {
+        latencyMonitor.stopMonitoring();
+      }
+    }
+    exports2.disposeNetworkStatusBar = disposeNetworkStatusBar;
   }
 });
 
@@ -3133,6 +3420,1123 @@ var require_contractInfo = __commonJS({
   }
 });
 
+// out/services/securityAnalyzer.js
+var require_securityAnalyzer = __commonJS({
+  "out/services/securityAnalyzer.js"(exports2) {
+    "use strict";
+    var __createBinding2 = exports2 && exports2.__createBinding || (Object.create ? function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      var desc = Object.getOwnPropertyDescriptor(m, k);
+      if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+        desc = { enumerable: true, get: function() {
+          return m[k];
+        } };
+      }
+      Object.defineProperty(o, k2, desc);
+    } : function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      o[k2] = m[k];
+    });
+    var __setModuleDefault2 = exports2 && exports2.__setModuleDefault || (Object.create ? function(o, v) {
+      Object.defineProperty(o, "default", { enumerable: true, value: v });
+    } : function(o, v) {
+      o["default"] = v;
+    });
+    var __importStar2 = exports2 && exports2.__importStar || function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k in mod)
+          if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k))
+            __createBinding2(result, mod, k);
+      }
+      __setModuleDefault2(result, mod);
+      return result;
+    };
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.SecurityAnalyzer = void 0;
+    var fs = __importStar2(require("fs"));
+    var path = __importStar2(require("path"));
+    var SecurityAnalyzer = class {
+      constructor(config = {}) {
+        this.ANALYSIS_VERSION = "1.0.0";
+        this.config = {
+          enableReentrancyDetection: true,
+          minimumRiskLevel: "low",
+          includeLowRisk: true,
+          customPatterns: [],
+          ...config
+        };
+      }
+      /**
+       * Perform comprehensive security analysis on a contract
+       */
+      async analyzeContract(contractPath, parsedFile) {
+        const contractName = parsedFile.contractName || path.basename(contractPath);
+        const vulnerabilities = [];
+        const externalCalls = [];
+        const stateAccessPatterns = [];
+        for (const func of parsedFile.functions) {
+          if (!func.isContractImpl)
+            continue;
+          const funcVulnerabilities = await this.analyzeFunctionForReentrancy(func, contractPath);
+          vulnerabilities.push(...funcVulnerabilities);
+          const funcExternalCalls = this.extractExternalCalls(func);
+          externalCalls.push(...funcExternalCalls);
+          const statePattern = this.analyzeStateAccessPattern(func, funcExternalCalls);
+          stateAccessPatterns.push(statePattern);
+        }
+        const overallRiskLevel = this.calculateOverallRisk(vulnerabilities);
+        const securityScore = this.calculateSecurityScore(vulnerabilities, externalCalls);
+        return {
+          contractPath,
+          contractName,
+          reentrancyVulnerabilities: vulnerabilities,
+          externalCalls,
+          stateAccessPatterns,
+          overallRiskLevel,
+          securityScore,
+          analyzedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          analysisVersion: this.ANALYSIS_VERSION
+        };
+      }
+      /**
+       * Analyze a single function for reentrancy vulnerabilities
+       */
+      async analyzeFunctionForReentrancy(func, contractPath) {
+        const vulnerabilities = [];
+        try {
+          const sourceCode = fs.readFileSync(contractPath, "utf8");
+          const lines = sourceCode.split("\n");
+          const functionLines = lines.slice(func.startLine - 1, func.endLine);
+          const functionCode = functionLines.join("\n");
+          const externalCallPattern = /(\w+)\.invoke|\.try_invoke|\.call|\.try_call/g;
+          const stateUpdatePattern = /(\w+)\s*=|\.set\(|\.insert\(|\.push\(|\.remove\(/g;
+          const externalCallMatches = [...functionCode.matchAll(externalCallPattern)];
+          const stateUpdateMatches = [...functionCode.matchAll(stateUpdatePattern)];
+          for (let i = 0; i < externalCallMatches.length; i++) {
+            const externalCall = externalCallMatches[i];
+            const externalCallLine = func.startLine + this.getLineNumberInFunction(externalCall.index, functionCode);
+            const subsequentStateUpdates = stateUpdateMatches.filter((update) => update.index > externalCall.index);
+            if (subsequentStateUpdates.length > 0) {
+              vulnerabilities.push({
+                id: `reentrancy_${func.name}_${externalCallLine}`,
+                type: "external_call_before_update",
+                riskLevel: "high",
+                functionName: func.name,
+                lineNumber: externalCallLine,
+                description: `External call followed by state update creates reentrancy risk`,
+                codeSnippet: this.getCodeSnippet(lines, externalCallLine, 2),
+                mitigation: "Use checks-effects-interactions pattern: perform all state checks, update state, then make external calls",
+                isConfirmed: true,
+                relatedCalls: [externalCall[0]]
+              });
+            }
+          }
+          if (externalCallMatches.length > 1) {
+            vulnerabilities.push({
+              id: `reentrancy_${func.name}_multiple_calls`,
+              type: "multiple_external_calls",
+              riskLevel: "medium",
+              functionName: func.name,
+              lineNumber: func.startLine,
+              description: `Multiple external calls in function increase reentrancy attack surface`,
+              codeSnippet: this.getCodeSnippet(lines, func.startLine, Math.min(10, func.endLine - func.startLine + 1)),
+              mitigation: "Consider breaking into separate functions or implementing reentrancy guards",
+              isConfirmed: false,
+              relatedCalls: externalCallMatches.map((match) => match[0])
+            });
+          }
+          const recursivePattern = new RegExp(`\\b${func.name}\\s*\\(`, "g");
+          if (recursivePattern.test(functionCode)) {
+            vulnerabilities.push({
+              id: `reentrancy_${func.name}_recursive`,
+              type: "recursive_call_possible",
+              riskLevel: "medium",
+              functionName: func.name,
+              lineNumber: func.startLine,
+              description: `Function may call itself directly or indirectly, enabling recursive reentrancy`,
+              codeSnippet: this.getCodeSnippet(lines, func.startLine, 5),
+              mitigation: "Implement reentrancy guards or use non-reentrant design patterns",
+              isConfirmed: false,
+              relatedCalls: [func.name]
+            });
+          }
+        } catch (error) {
+          console.error(`Error analyzing function ${func.name} for reentrancy:`, error);
+        }
+        return vulnerabilities;
+      }
+      /**
+       * Extract external calls from a function
+       */
+      extractExternalCalls(func) {
+        const externalCalls = [];
+        const patterns = [
+          /(\w+)\.invoke\s*\(\s*([^)]+)\s*\)/g,
+          /(\w+)\.try_invoke\s*\(\s*([^)]+)\s*\)/g,
+          /(\w+)\.call\s*\(\s*([^)]+)\s*\)/g,
+          /(\w+)\.try_call\s*\(\s*([^)]+)\s*\)/g
+        ];
+        patterns.forEach((pattern) => {
+          const matches = [...func.docComments.join("\n").matchAll(pattern)];
+          matches.forEach((match) => {
+            externalCalls.push({
+              functionName: func.name,
+              lineNumber: func.startLine,
+              // Simplified - would need actual line tracking
+              target: match[1],
+              method: "invoke",
+              // Simplified
+              canModifyState: true,
+              // Conservative assumption
+              sendsValue: false,
+              // Would need deeper analysis
+              riskLevel: "medium"
+            });
+          });
+        });
+        return externalCalls;
+      }
+      /**
+       * Analyze state access patterns for a function
+       */
+      analyzeStateAccessPattern(func, externalCalls) {
+        const readOperations = [];
+        const writeOperations = [];
+        return {
+          functionName: func.name,
+          readOperations,
+          writeOperations,
+          externalCalls,
+          modifiesStateAfterExternalCall: externalCalls.length > 0 && writeOperations.length > 0
+        };
+      }
+      /**
+       * Calculate overall risk level from vulnerabilities
+       */
+      calculateOverallRisk(vulnerabilities) {
+        if (vulnerabilities.length === 0)
+          return "low";
+        const criticalCount = vulnerabilities.filter((v) => v.riskLevel === "critical").length;
+        const highCount = vulnerabilities.filter((v) => v.riskLevel === "high").length;
+        const mediumCount = vulnerabilities.filter((v) => v.riskLevel === "medium").length;
+        if (criticalCount > 0)
+          return "critical";
+        if (highCount > 0)
+          return "high";
+        if (mediumCount > 2)
+          return "high";
+        if (mediumCount > 0)
+          return "medium";
+        return "low";
+      }
+      /**
+       * Calculate security score (0-100, higher is better)
+       */
+      calculateSecurityScore(vulnerabilities, externalCalls) {
+        let score = 100;
+        vulnerabilities.forEach((vuln) => {
+          switch (vuln.riskLevel) {
+            case "critical":
+              score -= 25;
+              break;
+            case "high":
+              score -= 15;
+              break;
+            case "medium":
+              score -= 8;
+              break;
+            case "low":
+              score -= 3;
+              break;
+          }
+        });
+        externalCalls.forEach((call) => {
+          if (call.canModifyState && call.sendsValue) {
+            score -= 5;
+          } else if (call.canModifyState) {
+            score -= 2;
+          }
+        });
+        return Math.max(0, Math.min(100, score));
+      }
+      /**
+       * Get line number within function from character index
+       */
+      getLineNumberInFunction(index, functionCode) {
+        const beforeIndex = functionCode.substring(0, index);
+        return beforeIndex.split("\n").length - 1;
+      }
+      /**
+       * Get code snippet around a specific line
+       */
+      getCodeSnippet(lines, centerLine, context) {
+        const start = Math.max(0, centerLine - 1 - context);
+        const end = Math.min(lines.length, centerLine + context);
+        return lines.slice(start, end).join("\n");
+      }
+    };
+    exports2.SecurityAnalyzer = SecurityAnalyzer;
+  }
+});
+
+// out/ui/securityPanel.js
+var require_securityPanel = __commonJS({
+  "out/ui/securityPanel.js"(exports2) {
+    "use strict";
+    var __createBinding2 = exports2 && exports2.__createBinding || (Object.create ? function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      var desc = Object.getOwnPropertyDescriptor(m, k);
+      if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+        desc = { enumerable: true, get: function() {
+          return m[k];
+        } };
+      }
+      Object.defineProperty(o, k2, desc);
+    } : function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      o[k2] = m[k];
+    });
+    var __setModuleDefault2 = exports2 && exports2.__setModuleDefault || (Object.create ? function(o, v) {
+      Object.defineProperty(o, "default", { enumerable: true, value: v });
+    } : function(o, v) {
+      o["default"] = v;
+    });
+    var __importStar2 = exports2 && exports2.__importStar || function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k in mod)
+          if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k))
+            __createBinding2(result, mod, k);
+      }
+      __setModuleDefault2(result, mod);
+      return result;
+    };
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.SecurityPanel = void 0;
+    var vscode2 = __importStar2(require("vscode"));
+    var SecurityPanel = class _SecurityPanel {
+      static createOrShow(extensionUri, analysisResult) {
+        const column = vscode2.window.activeTextEditor ? vscode2.window.activeTextEditor.viewColumn : void 0;
+        if (_SecurityPanel.instance) {
+          _SecurityPanel.instance._panel.reveal(column);
+          _SecurityPanel.instance._update(analysisResult);
+          return;
+        }
+        const panel = vscode2.window.createWebviewPanel(_SecurityPanel.viewType, "Security Analysis", column || vscode2.ViewColumn.One, {
+          // Enable javascript in the webview
+          enableScripts: true,
+          // Restrict the webview to only load resources from the extension directory
+          localResourceRoots: [extensionUri]
+        });
+        _SecurityPanel.instance = new _SecurityPanel(panel, extensionUri, analysisResult);
+      }
+      constructor(panel, _extensionUri, _analysisResult) {
+        this._extensionUri = _extensionUri;
+        this._analysisResult = _analysisResult;
+        this._disposables = [];
+        this._panel = panel;
+        this._update(this._analysisResult);
+        panel.onDidDispose(() => this.dispose(), null, this._disposables);
+        panel.webview.onDidReceiveMessage((message) => {
+          switch (message.command) {
+            case "openFile":
+              this.openFileAtLine(message.filePath, message.lineNumber);
+              break;
+          }
+        }, null, this._disposables);
+      }
+      dispose() {
+        _SecurityPanel.instance = void 0;
+        this._panel.dispose();
+        while (this._disposables.length) {
+          const x = this._disposables.pop();
+          if (x) {
+            x.dispose();
+          }
+        }
+      }
+      _update(analysisResult) {
+        this._analysisResult = analysisResult;
+        this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, analysisResult);
+      }
+      _getHtmlForWebview(webview, analysisResult) {
+        const vulnerabilityCounts = this.getVulnerabilityCounts(analysisResult.reentrancyVulnerabilities);
+        const riskDistribution = this.getRiskDistribution(analysisResult.reentrancyVulnerabilities);
+        const visualizationData = {
+          analysis: analysisResult,
+          vulnerabilityCounts,
+          riskDistribution,
+          vulnerabilityTimeline: []
+        };
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Analysis - ${analysisResult.contractName}</title>
+    <style>
+        body {
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            border-bottom: 2px solid var(--vscode-panel-border);
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .contract-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .contract-name {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--vscode-textLink-foreground);
+        }
+        .security-score {
+            font-size: 18px;
+            font-weight: bold;
+            padding: 10px 20px;
+            border-radius: 8px;
+        }
+        .score-critical { background-color: #f44336; color: white; }
+        .score-high { background-color: #ff9800; color: white; }
+        .score-medium { background-color: #ff9800; color: white; }
+        .score-low { background-color: #4caf50; color: white; }
+        
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .summary-card {
+            background-color: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .summary-card h3 {
+            margin-top: 0;
+            color: var(--vscode-textLink-foreground);
+            border-bottom: 1px solid var(--vscode-panel-border);
+            padding-bottom: 10px;
+        }
+        
+        .vulnerability-list {
+            margin-top: 30px;
+        }
+        .vulnerability-item {
+            background-color: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 8px;
+            margin-bottom: 20px;
+            padding: 20px;
+            border-left: 5px solid;
+        }
+        .risk-critical { border-left-color: #f44336; }
+        .risk-high { border-left-color: #ff9800; }
+        .risk-medium { border-left-color: #ff9800; }
+        .risk-low { border-left-color: #4caf50; }
+        
+        .vulnerability-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .vulnerability-title {
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .risk-badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .badge-critical { background-color: #f44336; color: white; }
+        .badge-high { background-color: #ff9800; color: white; }
+        .badge-medium { background-color: #ff9800; color: white; }
+        .badge-low { background-color: #4caf50; color: white; }
+        
+        .code-snippet {
+            background-color: var(--vscode-textBlockQuote-background);
+            border: 1px solid var(--vscode-textBlockQuote-border);
+            border-radius: 4px;
+            padding: 15px;
+            margin: 15px 0;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+        }
+        .mitigation {
+            background-color: var(--vscode-textBlockQuote-background);
+            border-left: 4px solid var(--vscode-textLink-activeForeground);
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .mitigation strong {
+            color: var(--vscode-textLink-activeForeground);
+        }
+        
+        .chart-container {
+            height: 300px;
+            margin: 20px 0;
+        }
+        
+        .file-link {
+            color: var(--vscode-textLink-foreground);
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .file-link:hover {
+            text-decoration: underline;
+        }
+        
+        .no-vulnerabilities {
+            text-align: center;
+            padding: 40px;
+            background-color: var(--vscode-textBlockQuote-background);
+            border-radius: 8px;
+            border: 1px solid var(--vscode-textBlockQuote-border);
+        }
+        .no-vulnerabilities h3 {
+            color: #4caf50;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="contract-info">
+                <div class="contract-name">${analysisResult.contractName}</div>
+                <div class="security-score score-${analysisResult.overallRiskLevel}">
+                    Security Score: ${analysisResult.securityScore}/100
+                </div>
+            </div>
+            <div>
+                <strong>Overall Risk Level:</strong> 
+                <span class="risk-badge badge-${analysisResult.overallRiskLevel}">${analysisResult.overallRiskLevel.toUpperCase()}</span>
+            </div>
+        </div>
+
+        <div class="summary-grid">
+            <div class="summary-card">
+                <h3>\u{1F512} Vulnerabilities Found</h3>
+                <div style="font-size: 24px; font-weight: bold; color: var(--vscode-errorForeground);">
+                    ${analysisResult.reentrancyVulnerabilities.length}
+                </div>
+            </div>
+            <div class="summary-card">
+                <h3>\u{1F4DE} External Calls</h3>
+                <div style="font-size: 24px; font-weight: bold; color: var(--vscode-warningForeground);">
+                    ${analysisResult.externalCalls.length}
+                </div>
+            </div>
+            <div class="summary-card">
+                <h3>\u{1F4CA} Risk Distribution</h3>
+                <div>
+                    ${Object.entries(riskDistribution).map(([risk, count]) => `<div style="margin: 5px 0;">
+                            <span class="risk-badge badge-${risk}">${risk}: ${count}</span>
+                        </div>`).join("")}
+                </div>
+            </div>
+            <div class="summary-card">
+                <h3>\u{1F4C5} Analyzed</h3>
+                <div style="font-size: 14px;">
+                    ${new Date(analysisResult.analyzedAt).toLocaleString()}
+                </div>
+            </div>
+        </div>
+
+        <div class="vulnerability-list">
+            <h2>\u{1F6A8} Reentrancy Vulnerabilities</h2>
+            ${analysisResult.reentrancyVulnerabilities.length === 0 ? `<div class="no-vulnerabilities">
+                    <h3>\u2705 No Reentrancy Vulnerabilities Detected</h3>
+                    <p>Great job! Your contract appears to be safe from common reentrancy attack patterns.</p>
+                </div>` : analysisResult.reentrancyVulnerabilities.map((vuln) => this.renderVulnerability(vuln)).join("")}
+        </div>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        
+        function openFile(filePath, lineNumber) {
+            vscode.postMessage({
+                command: 'openFile',
+                filePath: filePath,
+                lineNumber: lineNumber
+            });
+        }
+    </script>
+</body>
+</html>`;
+      }
+      renderVulnerability(vulnerability) {
+        return `
+            <div class="vulnerability-item risk-${vulnerability.riskLevel}">
+                <div class="vulnerability-header">
+                    <div class="vulnerability-title">${vulnerability.functionName}</div>
+                    <div class="risk-badge badge-${vulnerability.riskLevel}">${vulnerability.riskLevel}</div>
+                </div>
+                
+                <p><strong>Type:</strong> ${this.formatReentrancyType(vulnerability.type)}</p>
+                <p><strong>Location:</strong> Line ${vulnerability.lineNumber}</p>
+                <p><strong>Description:</strong> ${vulnerability.description}</p>
+                
+                ${vulnerability.codeSnippet ? `
+                    <div class="code-snippet">${vulnerability.codeSnippet}</div>
+                ` : ""}
+                
+                <div class="mitigation">
+                    <strong>\u{1F4A1} Mitigation:</strong> ${vulnerability.mitigation}
+                </div>
+                
+                ${vulnerability.relatedCalls.length > 0 ? `
+                    <p><strong>Related Calls:</strong> ${vulnerability.relatedCalls.join(", ")}</p>
+                ` : ""}
+            </div>
+        `;
+      }
+      formatReentrancyType(type) {
+        return type.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+      }
+      getVulnerabilityCounts(vulnerabilities) {
+        const counts = {};
+        vulnerabilities.forEach((vuln) => {
+          counts[vuln.type] = (counts[vuln.type] || 0) + 1;
+        });
+        return counts;
+      }
+      getRiskDistribution(vulnerabilities) {
+        const distribution = {
+          low: 0,
+          medium: 0,
+          high: 0,
+          critical: 0
+        };
+        vulnerabilities.forEach((vuln) => {
+          distribution[vuln.riskLevel]++;
+        });
+        return distribution;
+      }
+      openFileAtLine(filePath, lineNumber) {
+        const uri = vscode2.Uri.file(filePath);
+        vscode2.window.showTextDocument(uri).then((editor) => {
+          const line = editor.selection.active.line;
+          const newLine = lineNumber - 1;
+          const range = new vscode2.Range(newLine, 0, newLine, 0);
+          editor.selection = new vscode2.Selection(range.start, range.end);
+          editor.revealRange(range, vscode2.TextEditorRevealType.InCenter);
+        });
+      }
+    };
+    exports2.SecurityPanel = SecurityPanel;
+    SecurityPanel.viewType = "securityAnalysis";
+  }
+});
+
+// out/services/rustParser.js
+var require_rustParser = __commonJS({
+  "out/services/rustParser.js"(exports2) {
+    "use strict";
+    var __createBinding2 = exports2 && exports2.__createBinding || (Object.create ? function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      var desc = Object.getOwnPropertyDescriptor(m, k);
+      if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+        desc = { enumerable: true, get: function() {
+          return m[k];
+        } };
+      }
+      Object.defineProperty(o, k2, desc);
+    } : function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      o[k2] = m[k];
+    });
+    var __setModuleDefault2 = exports2 && exports2.__setModuleDefault || (Object.create ? function(o, v) {
+      Object.defineProperty(o, "default", { enumerable: true, value: v });
+    } : function(o, v) {
+      o["default"] = v;
+    });
+    var __importStar2 = exports2 && exports2.__importStar || function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k in mod)
+          if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k))
+            __createBinding2(result, mod, k);
+      }
+      __setModuleDefault2(result, mod);
+      return result;
+    };
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.RustParser = void 0;
+    var fs = __importStar2(require("fs"));
+    var RustParser = class {
+      constructor() {
+        this.cache = /* @__PURE__ */ new Map();
+        this.CACHE_TTL = 5 * 60 * 1e3;
+      }
+      /**
+       * Parse a Rust source file and extract contract functions
+       */
+      async parseFile(filePath) {
+        const cacheKey = this.getCacheKey(filePath);
+        const cached = this.cache.get(cacheKey);
+        if (cached && this.isCacheValid(cached)) {
+          return cached.parsed;
+        }
+        try {
+          const content = fs.readFileSync(filePath, "utf8");
+          const lines = content.split("\n");
+          const result = {
+            filePath,
+            functions: [],
+            errors: []
+          };
+          result.contractName = this.extractContractName(content);
+          const functions = this.extractFunctions(content, lines);
+          result.functions = functions;
+          const hash = this.hashContent(content);
+          this.cache.set(cacheKey, {
+            parsed: result,
+            contentHash: hash,
+            cachedAt: (/* @__PURE__ */ new Date()).toISOString()
+          });
+          return result;
+        } catch (error) {
+          return {
+            filePath,
+            functions: [],
+            errors: [`Failed to parse file: ${error instanceof Error ? error.message : "Unknown error"}`]
+          };
+        }
+      }
+      /**
+       * Extract contract name from #[contract] attribute
+       */
+      extractContractName(content) {
+        const contractMatch = content.match(/#\[contract\]\s*pub\s+struct\s+(\w+)/);
+        return contractMatch ? contractMatch[1] : void 0;
+      }
+      /**
+       * Extract function definitions from Rust source code
+       */
+      extractFunctions(content, lines) {
+        const functions = [];
+        let inContractImpl = false;
+        const contractImplMatch = content.match(/#\[contractimpl\]/);
+        if (contractImplMatch) {
+          inContractImpl = true;
+        }
+        const functionRegex = /(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^{]+))?/g;
+        const matches = [...content.matchAll(functionRegex)];
+        matches.forEach((match, index) => {
+          const fullMatch = match[0];
+          const functionName = match[1];
+          const paramString = match[2] || "";
+          const returnParam = match[3];
+          if (!inContractImpl && !fullMatch.includes("pub")) {
+            return;
+          }
+          const beforeMatch = content.substring(0, match.index);
+          const lineNumber = beforeMatch.split("\n").length;
+          const parameters = this.parseParameters(paramString);
+          const visibility = fullMatch.includes("pub") ? "pub" : "private";
+          const docComments = this.extractDocComments(lines, lineNumber);
+          functions.push({
+            name: functionName,
+            visibility,
+            parameters,
+            returnType: returnParam?.trim(),
+            docComments,
+            isContractImpl: inContractImpl,
+            startLine: lineNumber,
+            endLine: lineNumber + this.countFunctionLines(fullMatch)
+          });
+        });
+        return functions;
+      }
+      /**
+       * Parse function parameters from parameter string
+       */
+      parseParameters(paramString) {
+        const parameters = [];
+        if (!paramString.trim())
+          return parameters;
+        const params = this.splitParameters(paramString);
+        params.forEach((param) => {
+          const trimmed = param.trim();
+          if (!trimmed || trimmed === "&self" || trimmed === "self" || trimmed === "mut self") {
+            return;
+          }
+          const paramMatch = trimmed.match(/(?:(?:mut|&|&mut)\s+)?(\w+):\s*(.+)/);
+          if (paramMatch) {
+            const name = paramMatch[1];
+            const typeStr = paramMatch[2].trim();
+            const isReference = trimmed.includes("&");
+            const isMutable = trimmed.includes("mut");
+            parameters.push({
+              name,
+              typeStr,
+              isReference,
+              isMutable
+            });
+          }
+        });
+        return parameters;
+      }
+      /**
+       * Split parameters by comma, handling nested types
+       */
+      splitParameters(paramString) {
+        const params = [];
+        let current = "";
+        let depth = 0;
+        let inString = false;
+        for (let i = 0; i < paramString.length; i++) {
+          const char = paramString[i];
+          if (char === '"' && (i === 0 || paramString[i - 1] !== "\\")) {
+            inString = !inString;
+          }
+          if (!inString) {
+            if (char === "<" || char === "(" || char === "{") {
+              depth++;
+            } else if (char === ">" || char === ")" || char === "}") {
+              depth--;
+            } else if (char === "," && depth === 0) {
+              params.push(current.trim());
+              current = "";
+              continue;
+            }
+          }
+          current += char;
+        }
+        if (current.trim()) {
+          params.push(current.trim());
+        }
+        return params;
+      }
+      /**
+       * Extract doc comments for a function
+       */
+      extractDocComments(lines, functionLine) {
+        const docComments = [];
+        for (let i = functionLine - 2; i >= 0; i--) {
+          const line = lines[i].trim();
+          if (line.startsWith("///")) {
+            docComments.unshift(line.substring(3).trim());
+          } else if (line.startsWith("//") || line === "" || line.startsWith("pub")) {
+            break;
+          }
+        }
+        return docComments;
+      }
+      /**
+       * Count the number of lines in a function definition
+       */
+      countFunctionLines(functionMatch) {
+        return (functionMatch.match(/\n/g) || []).length + 1;
+      }
+      /**
+       * Generate cache key for file path
+       */
+      getCacheKey(filePath) {
+        return filePath;
+      }
+      /**
+       * Check if cache entry is still valid
+       */
+      isCacheValid(entry) {
+        const cachedTime = new Date(entry.cachedAt).getTime();
+        const now = (/* @__PURE__ */ new Date()).getTime();
+        return now - cachedTime < this.CACHE_TTL;
+      }
+      /**
+       * Hash content for cache validation
+       */
+      hashContent(content) {
+        let hash = 0;
+        for (let i = 0; i < content.length; i++) {
+          const char = content.charCodeAt(i);
+          hash = (hash << 5) - hash + char;
+          hash = hash & hash;
+        }
+        return hash.toString();
+      }
+      /**
+       * Clear the parser cache
+       */
+      clearCache() {
+        this.cache.clear();
+      }
+    };
+    exports2.RustParser = RustParser;
+  }
+});
+
+// out/commands/analyzeSecurity.js
+var require_analyzeSecurity = __commonJS({
+  "out/commands/analyzeSecurity.js"(exports2) {
+    "use strict";
+    var __createBinding2 = exports2 && exports2.__createBinding || (Object.create ? function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      var desc = Object.getOwnPropertyDescriptor(m, k);
+      if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+        desc = { enumerable: true, get: function() {
+          return m[k];
+        } };
+      }
+      Object.defineProperty(o, k2, desc);
+    } : function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      o[k2] = m[k];
+    });
+    var __setModuleDefault2 = exports2 && exports2.__setModuleDefault || (Object.create ? function(o, v) {
+      Object.defineProperty(o, "default", { enumerable: true, value: v });
+    } : function(o, v) {
+      o["default"] = v;
+    });
+    var __importStar2 = exports2 && exports2.__importStar || function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k in mod)
+          if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k))
+            __createBinding2(result, mod, k);
+      }
+      __setModuleDefault2(result, mod);
+      return result;
+    };
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.analyzeSecurity = void 0;
+    var vscode2 = __importStar2(require("vscode"));
+    var fs = __importStar2(require("fs"));
+    var path = __importStar2(require("path"));
+    var securityAnalyzer_1 = require_securityAnalyzer();
+    var securityPanel_1 = require_securityPanel();
+    var wasmDetector_1 = require_wasmDetector();
+    var rustParser_1 = require_rustParser();
+    async function analyzeSecurity(context, args) {
+      try {
+        let contractDir = null;
+        if (args?.contractPath) {
+          contractDir = args.contractPath;
+        } else {
+          contractDir = wasmDetector_1.WasmDetector.getActiveContractDirectory();
+          if (!contractDir) {
+            const contractDirs = await wasmDetector_1.WasmDetector.findContractDirectories();
+            if (contractDirs.length === 0) {
+              vscode2.window.showErrorMessage("No contract directories found in workspace");
+              return;
+            } else if (contractDirs.length === 1) {
+              contractDir = contractDirs[0];
+            } else {
+              const selected = await vscode2.window.showQuickPick(contractDirs.map((dir) => ({
+                label: path.basename(dir),
+                description: dir,
+                value: dir
+              })), {
+                placeHolder: "Select contract to analyze for security issues"
+              });
+              if (!selected)
+                return;
+              contractDir = selected.value;
+            }
+          }
+        }
+        if (!contractDir) {
+          vscode2.window.showErrorMessage("No contract directory selected");
+          return;
+        }
+        await vscode2.window.withProgress({
+          location: vscode2.ProgressLocation.Notification,
+          title: "Analyzing Contract Security",
+          cancellable: false
+        }, async (progress) => {
+          progress.report({ increment: 10, message: "Parsing contract source code..." });
+          const libRsPath = path.join(contractDir, "src", "lib.rs");
+          if (!fs.existsSync(libRsPath)) {
+            vscode2.window.showErrorMessage(`Contract source file not found: ${libRsPath}`);
+            return;
+          }
+          const parser = new rustParser_1.RustParser();
+          const parsedFile = await parser.parseFile(libRsPath);
+          progress.report({ increment: 30, message: "Analyzing for reentrancy vulnerabilities..." });
+          const analyzer = new securityAnalyzer_1.SecurityAnalyzer();
+          const analysisResult = await analyzer.analyzeContract(contractDir, parsedFile);
+          progress.report({ increment: 80, message: "Generating security report..." });
+          securityPanel_1.SecurityPanel.createOrShow(context.extensionUri, analysisResult);
+          progress.report({ increment: 100, message: "Analysis complete" });
+          const vulnerabilityCount = analysisResult.reentrancyVulnerabilities.length;
+          if (vulnerabilityCount === 0) {
+            vscode2.window.showInformationMessage(`\u2705 Security analysis complete: No reentrancy vulnerabilities found in ${analysisResult.contractName}`);
+          } else {
+            const riskLevel = analysisResult.overallRiskLevel;
+            const emoji = riskLevel === "critical" ? "\u{1F6A8}" : riskLevel === "high" ? "\u26A0\uFE0F" : riskLevel === "medium" ? "\u26A1" : "\u2139\uFE0F";
+            vscode2.window.showWarningMessage(`${emoji} Security analysis complete: Found ${vulnerabilityCount} reentrancy issue(s) in ${analysisResult.contractName} (Risk: ${riskLevel.toUpperCase()})`);
+          }
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+        vscode2.window.showErrorMessage(`Security analysis failed: ${errorMessage}`);
+        console.error("Security analysis error:", error);
+      }
+    }
+    exports2.analyzeSecurity = analyzeSecurity;
+  }
+});
+
+// out/commands/showNetworkHealth.js
+var require_showNetworkHealth = __commonJS({
+  "out/commands/showNetworkHealth.js"(exports2) {
+    "use strict";
+    var __createBinding2 = exports2 && exports2.__createBinding || (Object.create ? function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      var desc = Object.getOwnPropertyDescriptor(m, k);
+      if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+        desc = { enumerable: true, get: function() {
+          return m[k];
+        } };
+      }
+      Object.defineProperty(o, k2, desc);
+    } : function(o, m, k, k2) {
+      if (k2 === void 0)
+        k2 = k;
+      o[k2] = m[k];
+    });
+    var __setModuleDefault2 = exports2 && exports2.__setModuleDefault || (Object.create ? function(o, v) {
+      Object.defineProperty(o, "default", { enumerable: true, value: v });
+    } : function(o, v) {
+      o["default"] = v;
+    });
+    var __importStar2 = exports2 && exports2.__importStar || function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k in mod)
+          if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k))
+            __createBinding2(result, mod, k);
+      }
+      __setModuleDefault2(result, mod);
+      return result;
+    };
+    Object.defineProperty(exports2, "__esModule", { value: true });
+    exports2.showNetworkHealth = void 0;
+    var vscode2 = __importStar2(require("vscode"));
+    var networkStatusBar_12 = require_networkStatusBar();
+    var latencyMonitor_1 = require_latencyMonitor();
+    async function showNetworkHealth() {
+      const monitor = (0, networkStatusBar_12.getLatencyMonitor)();
+      if (!monitor) {
+        vscode2.window.showWarningMessage("Network monitoring is not active");
+        return;
+      }
+      const health = monitor.getNetworkHealth();
+      const config = vscode2.workspace.getConfiguration("stellarSuite");
+      const rpcUrl = config.get("rpcUrl") || "https://soroban-testnet.stellar.org:443";
+      const network = config.get("network") || "testnet";
+      const lines = [];
+      lines.push("\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550");
+      lines.push("         STELLAR RPC NETWORK HEALTH REPORT");
+      lines.push("\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550");
+      lines.push("");
+      lines.push(`Network:        ${network}`);
+      lines.push(`RPC Endpoint:   ${rpcUrl}`);
+      lines.push("");
+      lines.push("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      lines.push("  LATENCY METRICS");
+      lines.push("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      if (health.currentLatency >= 0) {
+        const color = latencyMonitor_1.LatencyMonitor.getLatencyColor(health.currentLatency);
+        const status = color === "green" ? "Excellent" : color === "orange" ? "Fair" : "Poor";
+        lines.push(`Current:        ${health.currentLatency}ms (${status})`);
+        lines.push(`Average:        ${health.averageLatency}ms`);
+        lines.push(`Min:            ${health.minLatency}ms`);
+        lines.push(`Max:            ${health.maxLatency}ms`);
+      } else {
+        lines.push("Current:        Not available");
+        lines.push(`Last Error:     ${health.lastError || "Unknown error"}`);
+      }
+      lines.push("");
+      lines.push("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      lines.push("  RELIABILITY");
+      lines.push("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      lines.push(`Success Rate:   ${health.successRate.toFixed(1)}%`);
+      lines.push(`Measurements:   ${health.measurements}`);
+      lines.push("");
+      lines.push("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      lines.push("  PERFORMANCE GUIDE");
+      lines.push("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500");
+      lines.push("< 100ms:        Excellent - Optimal for development");
+      lines.push("100-500ms:      Fair - May experience delays");
+      lines.push("> 500ms:        Poor - Consider switching endpoints");
+      lines.push("");
+      lines.push("\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550");
+      const report = lines.join("\n");
+      const outputChannel = vscode2.window.createOutputChannel("Stellar Network Health");
+      outputChannel.clear();
+      outputChannel.appendLine(report);
+      outputChannel.show();
+      const actions = [
+        { label: "$(refresh) Measure Now", description: "Run immediate latency test" },
+        { label: "$(gear) Change RPC Endpoint", description: "Update RPC URL in settings" },
+        { label: "$(globe) Switch Network", description: "Change Stellar network" }
+      ];
+      const selection = await vscode2.window.showQuickPick(actions, {
+        placeHolder: `Current latency: ${health.currentLatency >= 0 ? health.currentLatency + "ms" : "N/A"}`
+      });
+      if (selection) {
+        if (selection.label.includes("Measure Now")) {
+          vscode2.window.showInformationMessage("Measuring RPC latency...");
+          const result = await monitor.measureLatency();
+          if (result.success) {
+            vscode2.window.showInformationMessage(`Latency: ${result.latency}ms`);
+          } else {
+            vscode2.window.showErrorMessage(`Failed to measure latency: ${result.error}`);
+          }
+        } else if (selection.label.includes("Change RPC")) {
+          vscode2.commands.executeCommand("workbench.action.openSettings", "stellarSuite.rpcUrl");
+        } else if (selection.label.includes("Switch Network")) {
+          vscode2.commands.executeCommand("stellarSuite.switchNetwork");
+        }
+      }
+    }
+    exports2.showNetworkHealth = showNetworkHealth;
+  }
+});
+
 // out/ui/identityStatusBar.js
 var require_identityStatusBar = __commonJS({
   "out/ui/identityStatusBar.js"(exports2) {
@@ -3357,11 +4761,30 @@ var require_sidebarWebView = __commonJS({
         .filter-select {
             padding: 6px 8px;
             border: 1px solid var(--vscode-input-border);
-            background: var(--vscode-input-background);
-            color: var(--vscode-input-foreground);
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
             border-radius: 6px;
             font-size: 11px;
+        }
+        .wasm-size {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            margin: 2px 0;
+            font-family: var(--vscode-editor-font-family);
+        }
+        .btn-security {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 11px;
             cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-security:hover {
+            background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+            transform: translateY(-1px);
         }
         .contract-item, .deployment-item {
             background: var(--vscode-sideBar-background);
@@ -3602,8 +5025,12 @@ var require_sidebarWebView = __commonJS({
             vscode.postMessage({ command: 'simulate', contractId: contractId, functionName: functionName });
         }
         
-        function inspectContract(contractId) {
-            vscode.postMessage({ command: 'inspectContract', contractId: contractId });
+        function contractInfo(contractId) {
+            vscode.postMessage({ command: 'contractInfo', contractId: contractId });
+        }
+        
+        function analyzeSecurity(contractPath) {
+            vscode.postMessage({ command: 'analyzeSecurity', contractPath: contractPath });
         }
         
         function runInvoke(contractId, functionName) {
@@ -3697,6 +5124,7 @@ var require_sidebarWebView = __commonJS({
         return contracts.map((contract) => {
           const buildStatusBadge = contract.hasWasm ? '<span class="status-badge-success">Built</span>' : "";
           const functionsHtml = "";
+          const sizeInfo = contract.wasmSizeFormatted ? `<div class="wasm-size">Size: ${this.escapeHtml(contract.wasmSizeFormatted)}</div>` : "";
           return `
                 <div class="contract-item">
                     <div class="contract-name">
@@ -3704,6 +5132,7 @@ var require_sidebarWebView = __commonJS({
                         ${buildStatusBadge}
                     </div>
                     <div class="contract-path">${this.escapeHtml(contract.path)}</div>
+                    ${sizeInfo}
                     ${contract.contractId ? `<div class="contract-id clipboard-copy" onclick="copyToClipboard('${this.escapeHtml(contract.contractId)}')" title="Click to copy Contract ID">ID: ${this.escapeHtml(contract.contractId)} <span style="font-size: 10px; opacity: 0.7;">[COPY]</span></div>` : ""}
                     ${contract.lastDeployed ? `<div class="timestamp">Deployed: ${new Date(contract.lastDeployed).toLocaleString()}</div>` : ""}
                     ${functionsHtml}
@@ -3713,6 +5142,7 @@ var require_sidebarWebView = __commonJS({
                         ${contract.contractId ? `<button class="btn btn-secondary" onclick="simulate('${this.escapeHtml(contract.contractId)}')">Simulate</button>` : ""}
                         ${contract.contractId ? `<button class="btn btn-secondary" onclick="runInvoke('${this.escapeHtml(contract.contractId)}')">Run</button>` : ""}
                         ${contract.contractId ? `<button class="btn btn-secondary" onclick="contractInfo('${this.escapeHtml(contract.contractId)}')">Info</button>` : ""}
+                        <button class="btn btn-security" onclick="analyzeSecurity('${this.escapeHtml(contract.path)}')">\u{1F6E1}\uFE0F Security</button>
                     </div>
                 </div>
             `;
@@ -3851,6 +5281,12 @@ var require_sidebarView = __commonJS({
                   contractId: message.contractId
                 });
                 break;
+              case "analyzeSecurity":
+                if (message.contractPath) {
+                  this._context.workspaceState.update("selectedContractPath", message.contractPath);
+                }
+                await vscode2.commands.executeCommand("stellarSuite.analyzeSecurity");
+                break;
               case "getCliHistory":
                 const history = this.getCliHistory();
                 webviewView.webview.postMessage({
@@ -3899,6 +5335,15 @@ var require_sidebarView = __commonJS({
           const hasWasm = wasmPath && fs.existsSync(wasmPath);
           let contractId;
           let functions;
+          let wasmSize;
+          let wasmSizeFormatted;
+          if (hasWasm && wasmPath) {
+            const stats = fs.statSync(wasmPath);
+            wasmSize = stats.size;
+            if (wasmSize) {
+              wasmSizeFormatted = this.formatFileSize(wasmSize);
+            }
+          }
           const deploymentHistory = this._context.workspaceState.get("stellarSuite.deploymentHistory", []);
           const lastDeployment = deploymentHistory.find((d) => {
             const deployedContracts = this._context.workspaceState.get("stellarSuite.deployedContracts", {});
@@ -3912,7 +5357,9 @@ var require_sidebarView = __commonJS({
             path: dir,
             contractId,
             hasWasm,
-            lastDeployed: lastDeployment?.deployedAt
+            lastDeployed: lastDeployment?.deployedAt,
+            wasmSize,
+            wasmSizeFormatted
           });
         }
         return contracts;
@@ -3923,6 +5370,14 @@ var require_sidebarView = __commonJS({
       getCliHistory() {
         const history = this._context.workspaceState.get("stellarSuite.cliHistory", []);
         return history.slice(-10);
+      }
+      formatFileSize(bytes) {
+        if (bytes === 0)
+          return "0 B";
+        const k = 1024;
+        const sizes = ["B", "KB", "MB"];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
       }
       showDeploymentResult(deployment) {
         const deploymentHistory = this._context.workspaceState.get("stellarSuite.deploymentHistory", []);
@@ -4024,6 +5479,8 @@ var keyManager_1 = require_keyManager();
 var generateBindings_1 = require_generateBindings();
 var runInvoke_1 = require_runInvoke();
 var contractInfo_1 = require_contractInfo();
+var analyzeSecurity_1 = require_analyzeSecurity();
+var showNetworkHealth_1 = require_showNetworkHealth();
 var networkStatusBar_1 = require_networkStatusBar();
 var identityStatusBar_1 = require_identityStatusBar();
 var sidebarView_1 = require_sidebarView();
@@ -4087,6 +5544,12 @@ async function activate(context) {
     const contractInfoCommand = vscode.commands.registerCommand("stellarSuite.contractInfo", (args) => {
       return (0, contractInfo_1.contractInfo)(context, args);
     });
+    const analyzeSecurityCommand = vscode.commands.registerCommand("stellarSuite.analyzeSecurity", (args) => {
+      return (0, analyzeSecurity_1.analyzeSecurity)(context, args);
+    });
+    const showNetworkHealthCommand = vscode.commands.registerCommand("stellarSuite.showNetworkHealth", () => {
+      return (0, showNetworkHealth_1.showNetworkHealth)();
+    });
     const watcher = vscode.workspace.createFileSystemWatcher("**/{Cargo.toml,*.wasm}");
     watcher.onDidChange(() => {
       if (sidebarProvider) {
@@ -4103,7 +5566,7 @@ async function activate(context) {
         sidebarProvider.refresh();
       }
     });
-    context.subscriptions.push(simulateCommand, deployCommand, refreshCommand, deployFromSidebarCommand, simulateFromSidebarCommand, buildCommand, installCliCommand, switchNetworkCommand, keysGenerateCommand, keysFundCommand, keysListCommand, generateBindingsCommand, runInvokeCommand, contractInfoCommand, watcher);
+    context.subscriptions.push(simulateCommand, deployCommand, refreshCommand, deployFromSidebarCommand, simulateFromSidebarCommand, buildCommand, installCliCommand, switchNetworkCommand, keysGenerateCommand, keysFundCommand, keysListCommand, generateBindingsCommand, runInvokeCommand, contractInfoCommand, analyzeSecurityCommand, showNetworkHealthCommand, watcher);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     vscode.window.showErrorMessage(`Stellar Kit activation failed: ${errorMsg}`);
@@ -4111,5 +5574,6 @@ async function activate(context) {
 }
 exports.activate = activate;
 function deactivate() {
+  (0, networkStatusBar_1.disposeNetworkStatusBar)();
 }
 exports.deactivate = deactivate;
