@@ -21,6 +21,7 @@ import React, { Suspense, useEffect, useRef, useState } from "react";
 import { analyzeMathSafety } from "../../lib/mathSafetyAnalyzer";
 import { useMathSafetyStore } from "../../store/useMathSafetyStore";
 import { useUserSettingsStore } from "@/store/useUserSettingsStore";
+import { useTheme } from "next-themes";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { GitBlameLines } from "./GitBlameLines";
 import { getAllMonacoCompletions } from "@/utils/proptestSnippets";
@@ -44,7 +45,8 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
   const { setJumpToLine, saveViewState, getViewState } = useEditorStore();
   const { openErrorHelp } = useErrorHelpStore();
   const { mode, isSharing, broadcastContentChange } = useLiveShare();
-  const { theme: currentTheme, fontSize } = useUserSettingsStore();
+  const { theme: currentTheme } = useTheme();
+  const { fontSize } = useUserSettingsStore();
   const rustProviderRegistered = useRef(false);
 
     const monacoRef = useRef<typeof Monaco | null>(null);
