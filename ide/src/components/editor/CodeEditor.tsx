@@ -28,6 +28,8 @@ import { GitGutterMarkers } from "./GitGutterMarkers";
 import { git } from "@/lib/git";
 import "@/styles/editor-gutter.css";
 import { referenceProvider } from "@/lib/referenceProvider";
+import { useTheme } from "next-themes";
+import { useUserSettingsStore } from "@/store/useUserSettingsStore";
 
 interface CodeEditorProps {
   onCursorChange?: (line: number, col: number) => void;
@@ -41,6 +43,8 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ onCursorChange, onSave }) => {
   const { getFileCoverage } = useCoverageStore();
   const { setJumpToLine, saveViewState, getViewState } = useEditorStore();
   const { openErrorHelp } = useErrorHelpStore();
+  const { theme: currentTheme } = useTheme();
+  const { fontSize } = useUserSettingsStore();
   const rustProviderRegistered = useRef(false);
 
     const monacoRef = useRef<typeof Monaco | null>(null);
