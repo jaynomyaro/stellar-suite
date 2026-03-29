@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { nativeToScVal } from "@stellar/stellar-sdk";
 import {
   PanelRightClose,
   PanelRightOpen,
@@ -68,6 +69,7 @@ import { useErrorHelpStore } from "@/store/useErrorHelpStore";
 import ErrorHelpPanel from "@/components/ide/ErrorHelpPanel";
 import { useCloudSyncStore } from "@/store/useCloudSyncStore";
 import { ConflictModal } from "@/components/cloud/ConflictModal";
+import { useTransactionResultsStore } from "@/store/useTransactionResultsStore";
 import {
   createWorkspaceSnapshot,
   tutorialEngine,
@@ -75,6 +77,7 @@ import {
 import { parseCargoAuditOutput } from "@/utils/cargoAuditParser";
 import { parseMixedOutput } from "@/utils/cargoParser";
 import { parseClippyOutput, type ClippyLint } from "@/utils/clippyParser";
+import { decodeScValBase64 } from "@/utils/scValDecoder";
 import {
   createStreamProcessor,
   readCompileResponse,
@@ -91,6 +94,9 @@ import {
 
 const COMPILE_API_URL =
   process.env.NEXT_PUBLIC_COMPILE_API_URL ?? "/api/compile";
+
+const createTxHash = () =>
+  crypto.randomUUID().replace(/-/g, "").slice(0, 64).toUpperCase();
 
 const toCompilePath = (pathParts: string[]) => {
   if (pathParts.length === 2 && pathParts[1].endsWith(".rs")) {
@@ -274,6 +280,8 @@ export default function Index() {
     phase: "idle" | "preparing" | "success" | "failed";
     message: string;
   }>({ phase: "idle", message: "Invoke" });
+
+  const appendResultLog = useTransactionResultsStore((state) => state.appendLog);
 
   const [clippyLints, setClippyLints] = useState<ClippyLint[]>([]);
   const [isRunningClippy, setIsRunningClippy] = useState(false);
@@ -954,6 +962,8 @@ export default function Index() {
         return;
       }
 
+      const start = performance.now();
+      const timestamp = new Date().toISOString();
       setTerminalExpanded(true);
       const signer =
         activeContext?.type === "web-wallet"
@@ -963,19 +973,68 @@ export default function Index() {
       appendTerminalOutput(`Invoking ${fn}(${args}) as ${signer}...\r\n`);
       setInvokeState({ phase: "preparing", message: "Preparing..." });
 
-      setTimeout(() => {
-        appendTerminalOutput('Result: ["ok"]\r\n');
+      try {
+        // Simulated invocation response — replace with real pipeline when available.
+        const simulatedScVal = nativeToScVal(["Hello", "Dev"]);
+        const resultScValBase64 = simulatedScVal.toXDR("base64");
+        const { value, error } = decodeScValBase64(resultScValBase64);
+        const txHash = createTxHash();
+
+        appendTerminalOutput(
+          `Result: ${JSON.stringify(value ?? ["Hello", "Dev"])}\r\n`,
+        );
+        appendTerminalOutput(`Tx: ${txHash}\r\n`);
+
+        appendResultLog({
+          id: crypto.randomUUID(),
+          timestamp,
+          network: network as NetworkKey,
+          contractId,
+          fnName: fn,
+          argsJson: args,
+          status: "success",
+          txHash,
+          resultScValBase64,
+          decodedResult: value ?? null,
+          errorMessage: error ?? null,
+          durationMs: Math.round(performance.now() - start),
+          source: "simulate",
+        });
+
         setInvokeState({ phase: "success", message: "Confirmed" });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Invocation failed";
+        appendTerminalOutput(`Invoke failed: ${message}\r\n`);
+        appendResultLog({
+          id: crypto.randomUUID(),
+          timestamp,
+          network: network as NetworkKey,
+          contractId,
+          fnName: fn,
+          argsJson: args,
+          status: "error",
+          txHash: null,
+          resultScValBase64: null,
+          decodedResult: null,
+          errorMessage: message,
+          durationMs: Math.round(performance.now() - start),
+          source: "simulate",
+        });
+        setInvokeState({ phase: "failed", message: "Failed" });
+      } finally {
         setTimeout(() => {
           setInvokeState({ phase: "idle", message: "Invoke" });
         }, 1500);
-      }, 900);
+      }
     },
     [
       activeContext,
       activeIdentity,
+      appendResultLog,
       appendTerminalOutput,
       contractId,
+      network,
       setTerminalExpanded,
     ],
   );
